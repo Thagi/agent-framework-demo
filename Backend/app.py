@@ -66,6 +66,12 @@ MODEL_LABEL_DEFAULTS = {
     "gpt-4.1": "GPT-4.1",
     "gpt-4.1-mini": "GPT-4.1 Mini",
     "gpt-4.1-nano": "GPT-4.1 Nano",
+    "gpt-4-1": "GPT-4.1",
+    "gpt-4-1-mini": "GPT-4.1 Mini",
+    "gpt-4-1-nano": "GPT-4.1 Nano",
+    "gpt-5": "GPT-5",
+    "gpt-5-mini": "GPT-5 Mini",
+    "gpt-5-nano": "GPT-5 Nano",
     "gpt-5.2": "GPT-5.2",
     "gpt-5.2-chat": "GPT-5.2 Chat",
 }
@@ -108,10 +114,44 @@ def _model_env_suffix(model_name: str) -> str:
     return normalized or "DEFAULT"
 
 
+def _model_label_candidates(model_name: str | None) -> list[str]:
+    if not model_name:
+        return []
+
+    candidates: list[str] = []
+
+    def add_candidate(value: str) -> None:
+        if value and value not in candidates:
+            candidates.append(value)
+
+    add_candidate(model_name)
+    add_candidate(model_name.replace("-", "."))
+    add_candidate(model_name.replace(".", "-"))
+
+    provider_prefixes = (f"{MODEL_PROVIDER_AZURE}-", f"{MODEL_PROVIDER_OPENAI}-")
+    for prefix in provider_prefixes:
+        if model_name.startswith(prefix):
+            bare_name = model_name[len(prefix):]
+            add_candidate(bare_name)
+            add_candidate(bare_name.replace("-", "."))
+            add_candidate(bare_name.replace(".", "-"))
+            break
+
+    return candidates
+
+
+def _resolve_model_label(model_name: str | None) -> str | None:
+    for candidate in _model_label_candidates(model_name):
+        label = MODEL_LABEL_DEFAULTS.get(candidate)
+        if label:
+            return label
+    return None
+
+
 def _default_model_label(model_id: str, provider: str, reference_name: str | None = None) -> str:
-    base_name = MODEL_LABEL_DEFAULTS.get(model_id)
+    base_name = _resolve_model_label(model_id)
     if not base_name and reference_name:
-        base_name = MODEL_LABEL_DEFAULTS.get(reference_name)
+        base_name = _resolve_model_label(reference_name)
     if not base_name:
         base_name = model_id
     return f"{base_name} ({MODEL_PROVIDER_LABELS.get(provider, provider)})"

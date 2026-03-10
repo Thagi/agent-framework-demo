@@ -70,28 +70,44 @@ The Backend loads `Backend/.env` at startup.
 Copy `Backend/.env.example` to `Backend/.env` and set the values (**do not commit secrets**).
 
 ```
-LLM_MODELS=azure-gpt-4-1-mini,openai-gpt-4-1-mini
-DEFAULT_MODEL=azure-gpt-4-1-mini
-
-LLM_MODEL_AZURE_GPT_4_1_MINI_PROVIDER=azure
-LLM_MODEL_AZURE_GPT_4_1_MINI_LABEL=GPT-4.1 Mini (Azure OpenAI)
-LLM_MODEL_AZURE_GPT_4_1_MINI_API_KEY=...
-LLM_MODEL_AZURE_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
-LLM_MODEL_AZURE_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
-LLM_MODEL_AZURE_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
+LLM_MODELS=openai-gpt-4-1-mini,openai-gpt-4-1-nano,openai-gpt-4-1,openai-gpt-5-mini,openai-gpt-5-nano,openai-gpt-5
+DEFAULT_MODEL=openai-gpt-4-1-mini
 
 LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_4_1_MINI_LABEL=GPT-4.1 Mini (OpenAI)
 LLM_MODEL_OPENAI_GPT_4_1_MINI_API_KEY=...
-LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID=gpt-4.1-mini
+LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID=gpt-4-1-mini
+
+LLM_MODEL_OPENAI_GPT_4_1_NANO_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_4_1_NANO_API_KEY=...
+LLM_MODEL_OPENAI_GPT_4_1_NANO_MODEL_ID=gpt-4-1-nano
+
+LLM_MODEL_OPENAI_GPT_4_1_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_4_1_API_KEY=...
+LLM_MODEL_OPENAI_GPT_4_1_MODEL_ID=gpt-4-1
+
+LLM_MODEL_OPENAI_GPT_5_MINI_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_5_MINI_API_KEY=...
+LLM_MODEL_OPENAI_GPT_5_MINI_MODEL_ID=gpt-5-mini
+
+LLM_MODEL_OPENAI_GPT_5_NANO_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_5_NANO_API_KEY=...
+LLM_MODEL_OPENAI_GPT_5_NANO_MODEL_ID=gpt-5-nano
+
+LLM_MODEL_OPENAI_GPT_5_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_5_API_KEY=...
+LLM_MODEL_OPENAI_GPT_5_MODEL_ID=gpt-5
+
 # Optional for OpenAI-compatible gateways:
 # LLM_MODEL_OPENAI_GPT_4_1_MINI_ENDPOINT=https://api.openai.com/v1
 # LLM_MODEL_OPENAI_GPT_4_1_MINI_ORG_ID=org_xxx
+# LLM_MODEL_OPENAI_GPT_5_MINI_ENDPOINT=https://api.openai.com/v1
+# LLM_MODEL_OPENAI_GPT_5_MINI_ORG_ID=org_xxx
 ```
 
 Suffix rule for model-specific env vars:
 
-- `azure-gpt-4-1-mini` -> `AZURE_GPT_4_1_MINI`
+- `openai-gpt-5-mini` -> `OPENAI_GPT_5_MINI`
 - `openai-gpt-4-1-mini` -> `OPENAI_GPT_4_1_MINI`
 
 Per-model required fields:
@@ -105,6 +121,7 @@ Notes:
 - `DEFAULT_MODEL` must match one of the aliases in `LLM_MODELS`.
 - `ENDPOINT` is required for Azure and optional for OpenAI. For OpenAI, `ENDPOINT` is treated as the API base URL.
 - `API_VERSION` is used only for Azure-backed models.
+- With aliases such as `openai-gpt-5-mini`, the env prefix becomes `LLM_MODEL_OPENAI_GPT_5_MINI_*`.
 
 (Optional) If you use Azure AI Search (RAG search):
 
@@ -230,17 +247,16 @@ Deployment is automated by scripts/deploy-aca.ps1.
 Set these in PowerShell before running (the script validates them **only when the Backend is created for the first time**).
 
 ```powershell
-$env:LLM_MODELS = "azure-gpt-4-1-mini,openai-gpt-4-1-mini"
-$env:DEFAULT_MODEL = "azure-gpt-4-1-mini"
-
-$env:LLM_MODEL_AZURE_GPT_4_1_MINI_PROVIDER = "azure"
-$env:LLM_MODEL_AZURE_GPT_4_1_MINI_API_KEY = "..."
-$env:LLM_MODEL_AZURE_GPT_4_1_MINI_ENDPOINT = "https://<your-resource>.openai.azure.com/"
-$env:LLM_MODEL_AZURE_GPT_4_1_MINI_DEPLOYMENT = "..."
+$env:LLM_MODELS = "openai-gpt-4-1-mini,openai-gpt-4-1-nano,openai-gpt-4-1,openai-gpt-5-mini,openai-gpt-5-nano,openai-gpt-5"
+$env:DEFAULT_MODEL = "openai-gpt-4-1-mini"
 
 $env:LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER = "openai"
 $env:LLM_MODEL_OPENAI_GPT_4_1_MINI_API_KEY = "..."
-$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID = "gpt-4.1-mini"
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID = "gpt-4-1-mini"
+
+$env:LLM_MODEL_OPENAI_GPT_5_MINI_PROVIDER = "openai"
+$env:LLM_MODEL_OPENAI_GPT_5_MINI_API_KEY = "..."
+$env:LLM_MODEL_OPENAI_GPT_5_MINI_MODEL_ID = "gpt-5-mini"
 ```
 
 The deployment script also accepts the legacy Azure-only `AZURE_OPENAI_*` environment variables as a fallback.
