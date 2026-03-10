@@ -22,6 +22,17 @@ The current demo already covers:
 - backend-driven model configuration
 - `podman-compose` startup
 
+## Delivery Status
+
+Work is being implemented in priority order. As of March 10, 2026, the status is:
+
+| Item | Status | Notes |
+|---|---|---|
+| Task decomposition and plan visualization | Implemented | Visible plan panels are available in regular chat, multi-agent analysis, RAG, and the board workflow |
+| Human-in-the-loop approval | Not started | Next likely priority |
+| Tool trace and evidence view | Not started | Can follow approval or be developed in parallel |
+| File input support | Not started | Requires UI upload and extraction pipeline work |
+
 That means the next step is not "can it answer?", but "can it plan, act, explain, and be governed?"
 
 ## Prioritized Extensions

@@ -825,6 +825,60 @@ body.guideline-mode .chat-header {
     font-size: 1.5rem;
 }
 
+.execution-plan-panel {
+    background: rgba(255, 255, 255, 0.9);
+    border: 1px solid rgba(99, 102, 241, 0.18);
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    margin-bottom: 0.9rem;
+    box-shadow: 0 8px 24px rgba(99, 102, 241, 0.08);
+}
+
+.execution-plan-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.8rem;
+    font-weight: 700;
+    color: #4338ca;
+}
+
+.execution-plan-icon {
+    font-size: 1.1rem;
+}
+
+.execution-plan-title {
+    font-size: 0.95rem;
+}
+
+.execution-plan-section + .execution-plan-section {
+    margin-top: 0.65rem;
+}
+
+.execution-plan-section-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #475569;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+}
+
+.execution-plan-section-body {
+    font-size: 0.92rem;
+    color: #1f2937;
+    line-height: 1.5;
+}
+
+.execution-plan-list {
+    margin: 0;
+    padding-left: 1.15rem;
+}
+
+.execution-plan-list li + li {
+    margin-top: 0.25rem;
+}
+
 .agents-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

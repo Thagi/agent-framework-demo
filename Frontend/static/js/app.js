@@ -344,6 +344,7 @@ function normalizeStoredMessage(message) {
     const normalized = {
         ...message,
         timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
+        plan: message.plan || null,
         is_streaming: false,
         critical_streaming: false,
         positive_streaming: false,
@@ -469,6 +470,7 @@ function addAiMessage(isMultiAgentMode = false) {
     const message = {
         is_user: false,
         content: '',
+        plan: null,
         timestamp: timestamp,
         is_streaming: true,
         is_multi_agent: isMultiAgentMode,
@@ -492,6 +494,7 @@ function addAiMessageIdobata() {
         is_user: false,
         is_planning: true,
         timestamp: timestamp,
+        plan: null,
         planning_content: '',
         tech_content: '',
         business_content: '',
@@ -509,6 +512,144 @@ function renderMessage(message) {
         renderMultiAgentMessage(message);
     } else {
         renderNormalMessage(message);
+    }
+}
+
+function normalizePlanData(plan) {
+    if (!plan || typeof plan !== 'object') {
+        return null;
+    }
+
+    const normalizeItems = value => {
+        if (!Array.isArray(value)) return [];
+        return value
+            .map(item => typeof item === 'string' ? item.trim() : '')
+            .filter(Boolean);
+    };
+
+    const normalized = {
+        goal: typeof plan.goal === 'string' ? plan.goal.trim() : '',
+        steps: normalizeItems(plan.steps),
+        tools: normalizeItems(plan.tools),
+        completion_criteria: normalizeItems(plan.completion_criteria)
+    };
+
+    if (!normalized.goal && normalized.steps.length === 0 && normalized.tools.length === 0 && normalized.completion_criteria.length === 0) {
+        return null;
+    }
+
+    return normalized;
+}
+
+function createPlanSection(title) {
+    const section = document.createElement('div');
+    section.className = 'execution-plan-section';
+
+    const heading = document.createElement('div');
+    heading.className = 'execution-plan-section-title';
+    heading.textContent = title;
+
+    const body = document.createElement('div');
+    body.className = 'execution-plan-section-body';
+
+    section.appendChild(heading);
+    section.appendChild(body);
+
+    return { section, body };
+}
+
+function createExecutionPlanPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'execution-plan-panel';
+    panel.style.display = 'none';
+
+    const header = document.createElement('div');
+    header.className = 'execution-plan-header';
+    header.innerHTML = `
+        <span class="execution-plan-icon">🧭</span>
+        <span class="execution-plan-title">${t('plan_title')}</span>
+    `;
+
+    const goal = createPlanSection(t('plan_goal'));
+    const steps = createPlanSection(t('plan_steps'));
+    const tools = createPlanSection(t('plan_tools'));
+    const completion = createPlanSection(t('plan_completion'));
+
+    panel.appendChild(header);
+    panel.appendChild(goal.section);
+    panel.appendChild(steps.section);
+    panel.appendChild(tools.section);
+    panel.appendChild(completion.section);
+
+    return {
+        panel,
+        goal: goal.body,
+        steps: steps.body,
+        tools: tools.body,
+        completion: completion.body
+    };
+}
+
+function renderPlanItems(container, items) {
+    container.innerHTML = '';
+    if (!Array.isArray(items) || items.length === 0) {
+        return;
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'execution-plan-list';
+    items.forEach(item => {
+        const li = document.createElement('li');
+        li.textContent = item;
+        list.appendChild(li);
+    });
+    container.appendChild(list);
+}
+
+function applyExecutionPlan(planRefs, plan) {
+    const normalized = normalizePlanData(plan);
+    if (!planRefs || !planRefs.panel) return null;
+
+    if (!normalized) {
+        planRefs.panel.style.display = 'none';
+        return null;
+    }
+
+    planRefs.goal.textContent = normalized.goal;
+    renderPlanItems(planRefs.steps, normalized.steps);
+    renderPlanItems(planRefs.tools, normalized.tools);
+    renderPlanItems(planRefs.completion, normalized.completion_criteria);
+    planRefs.panel.style.display = 'block';
+    return normalized;
+}
+
+function updateMessagePlan(message, plan) {
+    if (!message || message.is_user) return;
+    const planRefs = message.element && message.element.plan ? message.element.plan : null;
+    const normalized = applyExecutionPlan(planRefs, plan);
+    if (normalized) {
+        message.plan = normalized;
+    }
+}
+
+function updateMultiAgentPlan(message, plan) {
+    const planRefs = message.element && message.element.plan ? message.element.plan : null;
+    const normalized = applyExecutionPlan(planRefs, plan);
+    if (normalized) {
+        message.plan = normalized;
+    }
+}
+
+function parseJsonLine(line) {
+    if (!line || !line.trim()) {
+        return null;
+    }
+
+    try {
+        return JSON.parse(line);
+    } catch (error) {
+        console.error('JSON parse error:', error);
+        return null;
     }
 }
 
@@ -543,6 +684,11 @@ function renderNormalMessage(message) {
     
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
+
+    let planRefs = null;
+    if (!message.is_user) {
+        planRefs = createExecutionPlanPanel();
+    }
     
     // User messages are plain text; AI messages are rendered as Markdown
     if (message.is_user) {
@@ -559,13 +705,19 @@ function renderNormalMessage(message) {
     }
     
     contentDiv.appendChild(header);
+    if (planRefs) {
+        contentDiv.appendChild(planRefs.panel);
+    }
     contentDiv.appendChild(textDiv);
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessages.appendChild(wrapper);
     
-    message.element = textDiv;
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs };
+    if (!message.is_user && message.plan) {
+        updateMessagePlan(message, message.plan);
+    }
 }
 
 function renderMultiAgentMessage(message) {
@@ -582,6 +734,8 @@ function renderMultiAgentMessage(message) {
         <strong>${t('multi_agent_button')}</strong>
         <span class="message-time">${formatTime(message.timestamp)}</span>
     `;
+
+    const planRefs = createExecutionPlanPanel();
     
     const grid = document.createElement('div');
     grid.className = 'agents-grid';
@@ -624,17 +778,22 @@ function renderMultiAgentMessage(message) {
     `;
     
     container.appendChild(header);
+    container.appendChild(planRefs.panel);
     container.appendChild(grid);
     container.appendChild(synthesisPanel);
     wrapper.appendChild(container);
     chatMessages.appendChild(wrapper);
     
     message.element = {
+        plan: planRefs,
         critical: criticalPanel.querySelector('[data-agent="critical"]'),
         positive: positivePanel.querySelector('[data-agent="positive"]'),
         synthesis: synthesisPanel.querySelector('[data-agent="synthesis"]'),
         synthesisPanel: synthesisPanel
     };
+    if (message.plan) {
+        updateMultiAgentPlan(message, message.plan);
+    }
 }
 
 function renderNormalMessageIdobata(message) {
@@ -660,6 +819,11 @@ function renderNormalMessageIdobata(message) {
 
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
+    let planRefs = null;
+
+    if (!message.is_user) {
+        planRefs = createExecutionPlanPanel();
+    }
 
     if (message.is_user) {
         textDiv.textContent = message.content;
@@ -675,13 +839,19 @@ function renderNormalMessageIdobata(message) {
     }
 
     contentDiv.appendChild(header);
+    if (planRefs) {
+        contentDiv.appendChild(planRefs.panel);
+    }
     contentDiv.appendChild(textDiv);
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessagesIdobata.appendChild(wrapper);
 
-    message.element = textDiv;
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs };
+    if (!message.is_user && message.plan) {
+        updateMessagePlan(message, message.plan);
+    }
 }
 
 function renderPlanningMessage(message) {
@@ -698,6 +868,8 @@ function renderPlanningMessage(message) {
         <strong>${t('idobata_planning_title')}</strong>
         <span class="message-time">${formatTime(message.timestamp)}</span>
     `;
+
+    const planRefs = createExecutionPlanPanel();
 
     const grid = document.createElement('div');
     grid.className = 'agents-grid planning-grid';
@@ -748,16 +920,21 @@ function renderPlanningMessage(message) {
     grid.appendChild(synthesisPanel);
 
     container.appendChild(header);
+    container.appendChild(planRefs.panel);
     container.appendChild(grid);
     wrapper.appendChild(container);
     chatMessagesIdobata.appendChild(wrapper);
 
     message.element = {
+        plan: planRefs,
         planning: planningPanel.querySelector('[data-agent="planning"]'),
         tech: techPanel.querySelector('[data-agent="tech"]'),
         business: businessPanel.querySelector('[data-agent="business"]'),
         synthesis: synthesisPanel.querySelector('[data-agent="synthesis"]')
     };
+    if (message.plan) {
+        updateMultiAgentPlan(message, message.plan);
+    }
 }
 
 function updateMessageContent(message, content) {
@@ -766,16 +943,17 @@ function updateMessageContent(message, content) {
     }
     
     message.content = content;
-    if (message.element) {
+    const textElement = message.element && message.element.text ? message.element.text : message.element;
+    if (textElement) {
         // User messages are plain text; AI messages are rendered as Markdown
         if (message.is_user) {
-            message.element.textContent = content;
+            textElement.textContent = content;
         } else {
-            message.element.innerHTML = renderMarkdown(content);
+            textElement.innerHTML = renderMarkdown(content);
         }
 
         // Remove existing typing indicator (dedupe / hide on completion)
-        const existingIndicator = message.element.querySelector('.typing-indicator');
+        const existingIndicator = textElement.querySelector('.typing-indicator');
         if (existingIndicator) {
             existingIndicator.remove();
         }
@@ -784,7 +962,7 @@ function updateMessageContent(message, content) {
             const indicator = document.createElement('span');
             indicator.className = 'typing-indicator';
             indicator.textContent = '▊';
-            message.element.appendChild(indicator);
+            textElement.appendChild(indicator);
         }
     }
 }
@@ -915,15 +1093,39 @@ async function streamNormalChat(prompt, aiMessage) {
     
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
+
+    const handleLine = line => {
+        const data = parseJsonLine(line);
+        if (!data) return;
+
+        if (data.type === 'plan' && data.plan) {
+            updateMessagePlan(aiMessage, data.plan);
+            scrollToBottom();
+        } else if (data.type === 'delta' && data.content) {
+            aiMessage.content += data.content;
+            updateMessageContent(aiMessage, aiMessage.content);
+            scrollToBottom();
+        } else if (data.type === 'error' && data.message) {
+            throw new Error(data.message);
+        }
+    };
     
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        
-        const chunk = decoder.decode(value);
-        aiMessage.content += chunk;
-        updateMessageContent(aiMessage, aiMessage.content);
-        scrollToBottom();
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            handleLine(line);
+        }
+    }
+
+    if (buffer.trim()) {
+        handleLine(buffer);
     }
 }
 
@@ -942,6 +1144,23 @@ async function streamMultiAgentChat(prompt, aiMessage) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+
+    const handleLine = line => {
+        const data = parseJsonLine(line);
+        if (!data) return;
+
+        if (data.type === 'plan' && data.plan) {
+            updateMultiAgentPlan(aiMessage, data.plan);
+            scrollToBottom();
+        } else if (data.type === 'synthesis_start') {
+            aiMessage.synthesis_streaming = true;
+        } else if (data.agent && data.content) {
+            updateMultiAgentContent(aiMessage, data.agent, data.content);
+            scrollToBottom();
+        } else if (data.type === 'error' && data.message) {
+            throw new Error(data.message);
+        }
+    };
     
     while (true) {
         const { done, value } = await reader.read();
@@ -952,21 +1171,12 @@ async function streamMultiAgentChat(prompt, aiMessage) {
         buffer = lines.pop() || '';
         
         for (const line of lines) {
-            if (line.trim()) {
-                try {
-                    const data = JSON.parse(line);
-                    
-                    if (data.type === 'synthesis_start') {
-                        aiMessage.synthesis_streaming = true;
-                    } else if (data.agent && data.content) {
-                        updateMultiAgentContent(aiMessage, data.agent, data.content);
-                        scrollToBottom();
-                    }
-                } catch (e) {
-                    console.error('JSON parse error:', e);
-                }
-            }
+            handleLine(line);
         }
+    }
+
+    if (buffer.trim()) {
+        handleLine(buffer);
     }
 }
 
@@ -1011,6 +1221,21 @@ async function streamIdobataChat(prompt, aiMessage) {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    const handleLine = line => {
+        const data = parseJsonLine(line);
+        if (!data) return;
+
+        if (data.type === 'plan' && data.plan) {
+            updateMultiAgentPlan(aiMessage, data.plan);
+            scrollToBottomIdobata();
+        } else if (data.agent && data.content) {
+            updatePlanningContent(aiMessage, data.agent, data.content);
+            scrollToBottomIdobata();
+        } else if (data.type === 'error' && data.message) {
+            throw new Error(data.message);
+        }
+    };
+
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1020,18 +1245,12 @@ async function streamIdobataChat(prompt, aiMessage) {
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-            if (line.trim()) {
-                try {
-                    const data = JSON.parse(line);
-                    if (data.agent && data.content) {
-                        updatePlanningContent(aiMessage, data.agent, data.content);
-                        scrollToBottomIdobata();
-                    }
-                } catch (e) {
-                    console.error('JSON parse error:', e);
-                }
-            }
+            handleLine(line);
         }
+    }
+
+    if (buffer.trim()) {
+        handleLine(buffer);
     }
 }
 
@@ -1152,6 +1371,7 @@ function addAiMessageGuideline() {
     const message = {
         is_user: false,
         content: '',
+        plan: null,
         timestamp: timestamp,
         is_streaming: true,
         element: null
@@ -1185,6 +1405,11 @@ function renderMessageGuideline(message) {
     
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
+    let planRefs = null;
+
+    if (!message.is_user) {
+        planRefs = createExecutionPlanPanel();
+    }
     
     if (message.is_user) {
         textDiv.textContent = message.content;
@@ -1200,26 +1425,33 @@ function renderMessageGuideline(message) {
     }
     
     contentDiv.appendChild(header);
+    if (planRefs) {
+        contentDiv.appendChild(planRefs.panel);
+    }
     contentDiv.appendChild(textDiv);
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessagesGuideline.appendChild(wrapper);
     
-    message.element = textDiv;
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs };
+    if (!message.is_user && message.plan) {
+        updateMessagePlan(message, message.plan);
+    }
 }
 
 function updateMessageContentGuideline(message, content) {
     message.content = content;
-    if (message.element) {
+    const textElement = message.element && message.element.text ? message.element.text : message.element;
+    if (textElement) {
         if (message.is_user) {
-            message.element.textContent = content;
+            textElement.textContent = content;
         } else {
-            message.element.innerHTML = renderMarkdown(content);
+            textElement.innerHTML = renderMarkdown(content);
         }
 
         // Remove existing typing indicator (dedupe / hide on completion)
-        const existingIndicator = message.element.querySelector('.typing-indicator');
+        const existingIndicator = textElement.querySelector('.typing-indicator');
         if (existingIndicator) {
             existingIndicator.remove();
         }
@@ -1228,7 +1460,7 @@ function updateMessageContentGuideline(message, content) {
             const indicator = document.createElement('span');
             indicator.className = 'typing-indicator';
             indicator.textContent = '▊';
-            message.element.appendChild(indicator);
+            textElement.appendChild(indicator);
         }
     }
 }
@@ -1292,15 +1524,39 @@ async function streamGuidelineChat(prompt, aiMessage) {
     
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
+    let buffer = '';
+
+    const handleLine = line => {
+        const data = parseJsonLine(line);
+        if (!data) return;
+
+        if (data.type === 'plan' && data.plan) {
+            updateMessagePlan(aiMessage, data.plan);
+            scrollToBottomGuideline();
+        } else if (data.type === 'delta' && data.content) {
+            aiMessage.content += data.content;
+            updateMessageContentGuideline(aiMessage, aiMessage.content);
+            scrollToBottomGuideline();
+        } else if (data.type === 'error' && data.message) {
+            throw new Error(data.message);
+        }
+    };
     
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        
-        const chunk = decoder.decode(value);
-        aiMessage.content += chunk;
-        updateMessageContentGuideline(aiMessage, aiMessage.content);
-        scrollToBottomGuideline();
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+            handleLine(line);
+        }
+    }
+
+    if (buffer.trim()) {
+        handleLine(buffer);
     }
 }
 

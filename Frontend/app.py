@@ -164,6 +164,7 @@ def chat_stream():
     def generate():
         """Generate streaming response"""
         ai_content = ""
+        plan_payload = None
         try:
             backend_request_start = time.time()
             logger.info(f"[{request_id}] {front_text('log_front_send_backend', model=model)}")
@@ -176,16 +177,25 @@ def chat_stream():
                     response.raise_for_status()
                     first_chunk = True
                     chunk_count = 0
-                    for chunk in response.iter_text():
-                        if chunk:
-                            if first_chunk:
-                                logger.info(
-                                    f"[{request_id}] {front_text('log_front_first_chunk', ms=f'{(time.time() - backend_request_start)*1000:.2f}') }"
-                                )
-                                first_chunk = False
-                            chunk_count += 1
-                            ai_content += chunk
-                            yield chunk
+                    for line in response.iter_lines():
+                        if not line.strip():
+                            continue
+                        if first_chunk:
+                            logger.info(
+                                f"[{request_id}] {front_text('log_front_first_chunk', ms=f'{(time.time() - backend_request_start)*1000:.2f}') }"
+                            )
+                            first_chunk = False
+                        chunk_count += 1
+                        yield line + '\n'
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if payload.get('type') == 'plan':
+                            plan_payload = payload.get('plan')
+                        elif payload.get('type') == 'delta' and payload.get('content'):
+                            ai_content += payload['content']
             
             total_time = time.time() - start_time
             logger.info(
@@ -196,24 +206,26 @@ def chat_stream():
             ai_message = {
                 'is_user': False,
                 'content': ai_content,
+                'plan': plan_payload,
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
             messages_store[session_id].append(ai_message)
             
         except Exception as e:
-            error_msg = front_text('error_block', error=str(e))
-            yield error_msg
+            error_data = {'type': 'error', 'message': str(e)}
+            yield json.dumps(error_data) + '\n'
             
             ai_message = {
                 'is_user': False,
-                'content': ai_content + error_msg,
+                'content': ai_content + front_text('error_block', error=str(e)),
+                'plan': plan_payload,
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
             messages_store[session_id].append(ai_message)
     
-    return Response(stream_with_context(generate()), content_type='text/plain')
+    return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
 
 @app.route('/api/rag/stream', methods=['POST'])
@@ -243,6 +255,7 @@ def guideline_stream():
     def generate():
         """Generate streaming response"""
         ai_content = ""
+        plan_payload = None
         try:
             with httpx.Client(timeout=60.0) as client:
                 with client.stream(
@@ -251,33 +264,43 @@ def guideline_stream():
                     json={'prompt': prompt, 'model': model, 'session_id': session_id}
                 ) as response:
                     response.raise_for_status()
-                    for chunk in response.iter_text():
-                        if chunk:
-                            ai_content += chunk
-                            yield chunk
+                    for line in response.iter_lines():
+                        if not line.strip():
+                            continue
+                        yield line + '\n'
+                        try:
+                            payload = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        if payload.get('type') == 'plan':
+                            plan_payload = payload.get('plan')
+                        elif payload.get('type') == 'delta' and payload.get('content'):
+                            ai_content += payload['content']
 
             messages_store[session_id].append(
                 {
                     'is_user': False,
                     'content': ai_content,
+                    'plan': plan_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 }
             )
             
         except Exception as e:
-            error_msg = front_text('error_block', error=str(e))
-            yield error_msg
+            yield json.dumps({'type': 'error', 'message': str(e)}) + '\n'
             messages_store[session_id].append(
                 {
                     'is_user': False,
-                    'content': ai_content + error_msg,
+                    'content': ai_content + front_text('error_block', error=str(e)),
+                    'plan': plan_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 }
             )
     
-    return Response(stream_with_context(generate()), content_type='text/plain')
+    return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
 
 @app.route('/api/chat/multi-agent-stream', methods=['POST'])
@@ -313,6 +336,7 @@ def multi_agent_stream():
             'is_user': False,
             'is_multi_agent': True,
             'timestamp': datetime.now().isoformat(),
+            'plan': None,
             'critical_content': '',
             'positive_content': '',
             'synthesis_content': ''
@@ -344,6 +368,8 @@ def multi_agent_stream():
                                 
                                 # Update message store
                                 data = json.loads(line)
+                                if data.get('type') == 'plan':
+                                    ai_message['plan'] = data.get('plan')
                                 if 'agent' in data and 'content' in data:
                                     agent = data['agent']
                                     content = data['content']
@@ -372,7 +398,7 @@ def multi_agent_stream():
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
             messages_store[session_id].append(ai_message)
     
-    return Response(stream_with_context(generate()), content_type='text/plain')
+    return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
 
 @app.route('/api/chat/idobata-stream', methods=['POST'])
@@ -409,6 +435,7 @@ def idobata_stream():
             'is_user': False,
             'is_planning': True,
             'timestamp': datetime.now().isoformat(),
+            'plan': None,
             'planning_content': '',
             'tech_content': '',
             'business_content': '',
@@ -441,6 +468,8 @@ def idobata_stream():
                                 yield line + '\n'
 
                                 data = json.loads(line)
+                                if data.get('type') == 'plan':
+                                    ai_message['plan'] = data.get('plan')
                                 if 'agent' in data and 'content' in data:
                                     agent = data['agent']
                                     content = data['content']
@@ -471,7 +500,7 @@ def idobata_stream():
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
             messages_store[session_id].append(ai_message)
 
-    return Response(stream_with_context(generate()), content_type='text/plain')
+    return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import logging
 from dataclasses import dataclass
 from typing import Optional
@@ -57,6 +58,8 @@ SEARCH_INDEX_NAME = os.getenv("SEARCH_INDEX_NAME")
 SEARCH_SEMANTIC_CONFIG = os.getenv("SEARCH_SEMANTIC_CONFIG", "default")
 SESSION_HISTORY_MESSAGES = max(int(os.getenv("SESSION_HISTORY_MESSAGES", "20")), 4)
 PROMPT_HISTORY_MESSAGES = max(int(os.getenv("PROMPT_HISTORY_MESSAGES", "8")), 2)
+PLAN_STEP_LIMIT = max(int(os.getenv("PLAN_STEP_LIMIT", "4")), 2)
+PLAN_TOOL_LIMIT = max(int(os.getenv("PLAN_TOOL_LIMIT", "4")), 1)
 MODE_GENERAL = "general"
 MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
@@ -450,6 +453,113 @@ def _format_history_messages(messages: list[ChatMessage]) -> str:
     return "\n\n".join(formatted)
 
 
+def _coerce_plan_text(value: object, limit: int = 240) -> str:
+    if value is None:
+        return ""
+
+    if isinstance(value, dict):
+        parts = []
+        for key in ("title", "step", "name", "description", "detail"):
+            item = value.get(key)
+            if item:
+                parts.append(str(item).strip())
+        text = " - ".join(parts) if parts else json.dumps(value, ensure_ascii=False)
+    else:
+        text = str(value)
+
+    text = re.sub(r"\s+", " ", text).strip(" -\n\t")
+    return text[:limit]
+
+
+def _normalize_plan_items(values: object, *, max_items: int, fallback_prefix: str) -> list[str]:
+    candidates: list[object]
+    if isinstance(values, list):
+        candidates = values
+    elif values:
+        candidates = [values]
+    else:
+        candidates = []
+
+    normalized: list[str] = []
+    for item in candidates:
+        text = _coerce_plan_text(item)
+        if not text or text in normalized:
+            continue
+        normalized.append(text)
+        if len(normalized) >= max_items:
+            break
+
+    if normalized:
+        return normalized
+
+    fallback_count = max(1, min(max_items, 2))
+    return [f"{fallback_prefix} {index}" for index in range(1, fallback_count + 1)]
+
+
+def _fallback_execution_plan(prompt: str) -> dict[str, object]:
+    request_summary = _coerce_plan_text(prompt, limit=160) or get_text('plan_fallback_goal', LANGUAGE)
+    return {
+        "goal": request_summary,
+        "steps": [
+            get_text('plan_fallback_step_understand', LANGUAGE),
+            get_text('plan_fallback_step_reason', LANGUAGE),
+            get_text('plan_fallback_step_answer', LANGUAGE),
+        ],
+        "tools": [get_text('plan_fallback_tool_model', LANGUAGE)],
+        "completion_criteria": [
+            get_text('plan_fallback_completion_relevance', LANGUAGE),
+            get_text('plan_fallback_completion_actionable', LANGUAGE),
+        ],
+    }
+
+
+def _normalize_execution_plan(raw_plan: object, prompt: str) -> dict[str, object]:
+    if not isinstance(raw_plan, dict):
+        return _fallback_execution_plan(prompt)
+
+    goal = _coerce_plan_text(raw_plan.get("goal"), limit=200) or _coerce_plan_text(prompt, limit=160)
+    steps = _normalize_plan_items(
+        raw_plan.get("steps"),
+        max_items=PLAN_STEP_LIMIT,
+        fallback_prefix=get_text('plan_fallback_step_label', LANGUAGE),
+    )
+    tools = _normalize_plan_items(
+        raw_plan.get("tools") or [get_text('plan_fallback_tool_model', LANGUAGE)],
+        max_items=PLAN_TOOL_LIMIT,
+        fallback_prefix=get_text('plan_fallback_tool_label', LANGUAGE),
+    )
+    completion_criteria = _normalize_plan_items(
+        raw_plan.get("completion_criteria"),
+        max_items=3,
+        fallback_prefix=get_text('plan_fallback_completion_label', LANGUAGE),
+    )
+
+    return {
+        "goal": goal,
+        "steps": steps,
+        "tools": tools,
+        "completion_criteria": completion_criteria,
+    }
+
+
+def _extract_plan_payload(planner_output: str, prompt: str) -> dict[str, object]:
+    planner_output = planner_output.strip()
+    if not planner_output:
+        return _fallback_execution_plan(prompt)
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(planner_output):
+        if char != "{":
+            continue
+        try:
+            raw_plan, _ = decoder.raw_decode(planner_output[index:])
+            return _normalize_execution_plan(raw_plan, prompt)
+        except json.JSONDecodeError:
+            continue
+
+    return _fallback_execution_plan(prompt)
+
+
 async def build_prompt_with_history(prompt: str, mode: str, session_id: str) -> str:
     session = await session_store.get_session(mode, session_id)
     if session.thread.message_store is None:
@@ -479,6 +589,26 @@ async def append_session_exchange(mode: str, session_id: str, user_prompt: str, 
             ChatMessage(role="assistant", text=assistant_reply),
         ]
     )
+
+
+async def generate_execution_plan(prompt: str, mode: str, session_id: str, model_chat_client) -> dict[str, object]:
+    planner_agent = ChatAgent(
+        name="Planner",
+        chat_client=model_chat_client,
+        instructions=get_text(
+            'agent_planner_instructions',
+            LANGUAGE,
+            max_steps=PLAN_STEP_LIMIT,
+            max_tools=PLAN_TOOL_LIMIT,
+        ),
+    )
+    planner_prompt = await build_prompt_with_history(prompt, mode, session_id)
+    planner_parts: list[str] = []
+    async for update in planner_agent.run_stream(planner_prompt):
+        if update.text:
+            planner_parts.append(update.text)
+
+    return _extract_plan_payload("".join(planner_parts), prompt)
 
 
 def search_tool(
@@ -551,38 +681,46 @@ async def api_stream(request: Request):
         # Get a chat client for the requested model
         model_chat_client = get_chat_client_for_model(model_name)
         if model_chat_client is None:
-            yield get_text('error_config_missing', LANGUAGE)
+            yield json.dumps({"type": "error", "message": get_text('error_config_missing', LANGUAGE)}, ensure_ascii=False) + "\n"
             return
 
         session = await session_store.get_session(MODE_GENERAL, session_id)
         async with session.lock:
-            # Create a simple agent
-            agent_start = time.time()
-            logger.info(f"[{request_id}] {get_text('log_agent_creating', LANGUAGE)}")
-            simple_agent = ChatAgent(
-                name="SimpleAgent",
-                chat_client=model_chat_client,
-                instructions=get_text('agent_simple_instructions', LANGUAGE),
-            )
-            logger.info(f"[{request_id}] {get_text('log_agent_created', LANGUAGE, time=f'{(time.time() - agent_start)*1000:.2f}')}")
+            try:
+                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_chat_client)
+                yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
 
-            # Stream response
-            stream_start = time.time()
-            logger.info(f"[{request_id}] {get_text('log_streaming_start', LANGUAGE, length=len(prompt))}")
-            first_chunk = True
-            chunk_count = 0
-            async for update in simple_agent.run_stream(prompt, thread=session.thread):
-                if update.text:
-                    if first_chunk:
-                        logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
-                        first_chunk = False
-                    chunk_count += 1
-                    yield update.text
+                # Create a simple agent
+                agent_start = time.time()
+                logger.info(f"[{request_id}] {get_text('log_agent_creating', LANGUAGE)}")
+                simple_agent = ChatAgent(
+                    name="SimpleAgent",
+                    chat_client=model_chat_client,
+                    instructions=get_text('agent_simple_instructions', LANGUAGE),
+                )
+                logger.info(f"[{request_id}] {get_text('log_agent_created', LANGUAGE, time=f'{(time.time() - agent_start)*1000:.2f}')}")
 
-            total_time = time.time() - start_time
-            logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
+                # Stream response
+                stream_start = time.time()
+                logger.info(f"[{request_id}] {get_text('log_streaming_start', LANGUAGE, length=len(prompt))}")
+                first_chunk = True
+                chunk_count = 0
+                async for update in simple_agent.run_stream(prompt, thread=session.thread):
+                    if update.text:
+                        if first_chunk:
+                            logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
+                            first_chunk = False
+                        chunk_count += 1
+                        yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(generator(), media_type="text/plain")
+                total_time = time.time() - start_time
+                logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
+                yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
+            except Exception as e:
+                logger.exception("[%s] Regular chat stream failed", request_id)
+                yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(generator(), media_type="application/x-ndjson")
 
 
 @app.post("/api/rag/stream")
@@ -610,12 +748,15 @@ async def api_guideline_stream(request: Request):
         # Get a chat client for the requested model
         model_chat_client = get_chat_client_for_model(model_name)
         if model_chat_client is None:
-            yield get_text('error_config_missing', LANGUAGE)
+            yield json.dumps({"type": "error", "message": get_text('error_config_missing', LANGUAGE)}, ensure_ascii=False) + "\n"
             return
 
         session = await session_store.get_session(MODE_GUIDELINE, session_id)
         async with session.lock:
             try:
+                plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_chat_client)
+                yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
+
                 # Agent using Azure AI Search tool
                 agent_start = time.time()
                 logger.info(f"[{request_id}] {get_text('log_search_agent_creating', LANGUAGE)}")
@@ -637,17 +778,18 @@ async def api_guideline_stream(request: Request):
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
                             first_chunk = False
                         chunk_count += 1
-                        yield update.text
+                        yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
+                yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
 
             except Exception as e:
                 error_msg = get_text('error_search_processing', LANGUAGE, error=str(e))
                 logger.error(f"[{request_id}] ❌ {error_msg}")
-                yield get_text('error_retry_message', LANGUAGE, error=error_msg)
+                yield json.dumps({"type": "error", "message": error_msg}, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(generator(), media_type="text/plain")
+    return StreamingResponse(generator(), media_type="application/x-ndjson")
 
 
 @app.post("/api/multi-agent-stream")
@@ -670,8 +812,6 @@ async def multi_agent_stream(request: Request):
     logger.info(f"[{request_id}] {get_text('log_multi_agent_parsed', LANGUAGE, time=f'{(parse_time - start_time)*1000:.2f}')}")
 
     async def generator():
-        import json
-
         # Get a chat client for the requested model
         model_chat_client = get_chat_client_for_model(model_name)
         if model_chat_client is None:
@@ -710,6 +850,8 @@ async def multi_agent_stream(request: Request):
                 yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
 
                 workflow_prompt = await build_prompt_with_history(prompt, MODE_GENERAL, session_id)
+                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_chat_client)
+                yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
 
                 # Use ConcurrentBuilder to create parallel workflow
                 workflow_start = time.time()
@@ -808,7 +950,7 @@ Positive perspective:
                 }
                 yield json.dumps(error_data, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(generator(), media_type="text/plain")
+    return StreamingResponse(generator(), media_type="application/x-ndjson")
 
 
 @app.post("/api/phase1/stream")
@@ -846,10 +988,8 @@ async def phase1_planning_stream(request: Request):
     async def generator():
         model_chat_client = get_chat_client_for_model(model_name)
         if model_chat_client is None:
-            yield get_text('error_config_missing', LANGUAGE) + "\n"
+            yield json.dumps({"type": "error", "message": get_text('error_config_missing', LANGUAGE)}, ensure_ascii=False) + "\n"
             return
-
-        import json
 
         AGENT_SEQUENCE = [
             "CEO",
@@ -983,6 +1123,8 @@ async def phase1_planning_stream(request: Request):
             logger.info(f"[{request_id}] {get_text('log_board_workflow_built', LANGUAGE, id=workflow_id)}")
 
             workflow_prompt = await build_prompt_with_history(prompt, MODE_IDOBATA, session_id)
+            plan = await generate_execution_plan(prompt, MODE_IDOBATA, session_id, model_chat_client)
+            yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
             workflow_exec_start = time.time()
             logger.info(f"[{request_id}] {get_text('log_board_workflow_start', LANGUAGE, length=len(prompt))}")
             event_count = 0
@@ -1047,7 +1189,7 @@ async def phase1_planning_stream(request: Request):
             logger.info(f"[{request_id}] {get_text('log_board_complete', LANGUAGE, workflow_time=f'{workflow_time:.2f}', count=event_count, total_time=f'{total_time:.2f}')}")
             yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
 
-    return StreamingResponse(generator(), media_type="text/plain")
+    return StreamingResponse(generator(), media_type="application/x-ndjson")
 
 
 @app.get("/api/models")

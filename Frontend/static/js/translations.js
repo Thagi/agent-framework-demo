@@ -39,6 +39,11 @@ const translations = {
         'tone_casual': 'カジュアル（親しみやすい）',
         'tone_concise': '簡潔（要点のみ）',
         'tone_detailed': '詳細（丁寧な説明）',
+        'plan_title': '実行計画',
+        'plan_goal': 'ゴール',
+        'plan_steps': 'ステップ',
+        'plan_tools': '利用手段',
+        'plan_completion': '完了条件',
         
         // Input area
         'input_placeholder': 'メッセージを入力... (Enterで送信、Shift+Enterで改行)',
@@ -129,6 +134,11 @@ const translations = {
         'tone_casual': 'Casual (Friendly)',
         'tone_concise': 'Concise (Key points)',
         'tone_detailed': 'Detailed (Thorough)',
+        'plan_title': 'Execution Plan',
+        'plan_goal': 'Goal',
+        'plan_steps': 'Steps',
+        'plan_tools': 'Tools',
+        'plan_completion': 'Completion',
         
         // Input area
         'input_placeholder': 'Enter message... (Enter to send, Shift+Enter for new line)',

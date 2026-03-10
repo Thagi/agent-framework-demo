@@ -19,9 +19,24 @@ translations = {
 あなたは統合の専門家です。
 批判的な視点と肯定的な視点の両方を考慮し、バランスの取れた総合的な分析を提供します。
 両方の視点を統合し、実用的な結論を導き出してください。
-""",
+        """,
         # エージェントインストラクション - 通常アシスタント
         'agent_simple_instructions': "あなたは親切なアシスタントです。質問に簡潔に答えてください。",
+        'agent_planner_instructions': """
+あなたは回答前に実行計画だけを作る Planner Agent です。
+最終回答はまだ生成せず、短い実行計画を JSON だけで返してください。
+
+出力ルール:
+- JSON 以外の文字を書かない
+- Markdown やコードブロックを使わない
+- keys は必ず goal, steps, tools, completion_criteria を使う
+- goal は短い文字列
+- steps は 2 個以上 {max_steps} 個以下の短い文字列配列
+- tools は 1 個以上 {max_tools} 個以下の短い文字列配列
+- completion_criteria は 2 個以上 3 個以下の短い文字列配列
+- 会話履歴が関連する場合は steps や tools に反映する
+- tools には必要に応じて「会話履歴」「検索」「並列分析」などの手段を書く
+""",
         
         # エージェントインストラクション - RAG検索
         'agent_guideline_instructions': """あなたはRAG（検索拡張生成）による参照検索アシスタントです。
@@ -220,6 +235,16 @@ PLAN_READY: 上記プランで実行準備完了
         'search_error': "検索エラー: {error}",
         'search_file_label': "ファイル名",
         'search_content_label': "内容",
+        'plan_fallback_goal': "ユーザーの依頼に答える",
+        'plan_fallback_step_label': "対応ステップ",
+        'plan_fallback_tool_label': "利用手段",
+        'plan_fallback_completion_label': "完了条件",
+        'plan_fallback_step_understand': "依頼内容と会話履歴を確認して論点を整理する",
+        'plan_fallback_step_reason': "必要な観点を洗い出して回答方針を組み立てる",
+        'plan_fallback_step_answer': "要点と次アクションが分かる形で回答をまとめる",
+        'plan_fallback_tool_model': "会話履歴と選択中モデルを使って回答する",
+        'plan_fallback_completion_relevance': "質問に直接答えていること",
+        'plan_fallback_completion_actionable': "次に取るべき行動や判断材料が明確であること",
         
         # エラーメッセージ
         'error_config_missing': "Error: model configuration is missing",
@@ -293,9 +318,23 @@ Find value from a positive perspective and state specific merits concisely.
 You are an expert in synthesis.
 Consider both critical and positive perspectives to provide a balanced comprehensive analysis.
 Integrate both perspectives and draw practical conclusions.
-""",
+        """,
         # Agent Instructions - Simple Assistant
         'agent_simple_instructions': "You are a helpful assistant. Answer questions concisely.",
+        'agent_planner_instructions': """
+You are a planner agent that produces only an execution plan before the final answer.
+Do not answer the user yet. Return JSON only.
+
+Output rules:
+- Return JSON only, with no markdown or code fences
+- Required keys: goal, steps, tools, completion_criteria
+- goal must be a short string
+- steps must be an array of 2 to {max_steps} short strings
+- tools must be an array of 1 to {max_tools} short strings
+- completion_criteria must be an array of 2 to 3 short strings
+- Use conversation history when it is relevant
+- tools should mention practical means such as conversation memory, search, or parallel analysis when relevant
+""",
         
         # Agent Instructions - RAG Search
         'agent_guideline_instructions': """You are a RAG (retrieval-augmented) search assistant.
@@ -494,6 +533,16 @@ Present a concrete executable plan.""",
         'search_error': "Search error: {error}",
         'search_file_label': "File name",
         'search_content_label': "Content",
+        'plan_fallback_goal': "Address the user's request",
+        'plan_fallback_step_label': "Step",
+        'plan_fallback_tool_label': "Tool",
+        'plan_fallback_completion_label': "Completion criterion",
+        'plan_fallback_step_understand': "Review the request and relevant conversation context",
+        'plan_fallback_step_reason': "Identify the key angles and shape an answer strategy",
+        'plan_fallback_step_answer': "Deliver a concise answer with clear next actions",
+        'plan_fallback_tool_model': "Use conversation memory and the selected model",
+        'plan_fallback_completion_relevance': "The response directly addresses the request",
+        'plan_fallback_completion_actionable': "The response leaves clear next steps or decision points",
         
         # Error Messages
         'error_config_missing': "Error: model configuration is missing",
