@@ -44,7 +44,19 @@ const translations = {
         'plan_steps': 'ステップ',
         'plan_tools': '利用手段',
         'plan_completion': '完了条件',
-        
+        'trace_title': '実行ログ',
+        'trace_query': '検索語',
+        'trace_status': '状態',
+        'trace_results': '結果件数',
+        'trace_duration': '所要時間',
+        'trace_message': '補足',
+        'trace_tool_search': '検索ツール',
+        'trace_status_success': '成功',
+        'trace_status_no_results': '結果なし',
+        'trace_status_error': 'エラー',
+        'evidence_title': '根拠',
+        'evidence_source': '出典',
+
         // Input area
         'input_placeholder': 'メッセージを入力... (Enterで送信、Shift+Enterで改行)',
         'input_placeholder_guideline': 'RAG検索したい質問を入力... (Enterで送信、Shift+Enterで改行)',
@@ -150,7 +162,19 @@ const translations = {
         'plan_steps': 'Steps',
         'plan_tools': 'Tools',
         'plan_completion': 'Completion',
-        
+        'trace_title': 'Execution Trace',
+        'trace_query': 'Query',
+        'trace_status': 'Status',
+        'trace_results': 'Results',
+        'trace_duration': 'Duration',
+        'trace_message': 'Note',
+        'trace_tool_search': 'Search Tool',
+        'trace_status_success': 'Success',
+        'trace_status_no_results': 'No results',
+        'trace_status_error': 'Error',
+        'evidence_title': 'Evidence',
+        'evidence_source': 'Source',
+
         // Input area
         'input_placeholder': 'Enter message... (Enter to send, Shift+Enter for new line)',
         'input_placeholder_guideline': 'Ask a question to search with RAG... (Enter to send, Shift+Enter for new line)',

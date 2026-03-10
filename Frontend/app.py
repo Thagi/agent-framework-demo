@@ -256,6 +256,8 @@ def guideline_stream():
         """Generate streaming response"""
         ai_content = ""
         plan_payload = None
+        trace_payloads = []
+        evidence_payload = []
         try:
             with httpx.Client(timeout=60.0) as client:
                 with client.stream(
@@ -277,12 +279,18 @@ def guideline_stream():
                             plan_payload = payload.get('plan')
                         elif payload.get('type') == 'delta' and payload.get('content'):
                             ai_content += payload['content']
+                        elif payload.get('type') == 'trace' and payload.get('trace'):
+                            trace_payloads.append(payload.get('trace'))
+                        elif payload.get('type') == 'evidence' and payload.get('evidence'):
+                            evidence_payload = payload.get('evidence')
 
             messages_store[session_id].append(
                 {
                     'is_user': False,
                     'content': ai_content,
                     'plan': plan_payload,
+                    'traces': trace_payloads,
+                    'evidence': evidence_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 }
@@ -295,6 +303,8 @@ def guideline_stream():
                     'is_user': False,
                     'content': ai_content + front_text('error_block', error=str(e)),
                     'plan': plan_payload,
+                    'traces': trace_payloads,
+                    'evidence': evidence_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 }

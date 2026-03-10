@@ -469,6 +469,8 @@ function normalizeStoredMessage(message) {
         ...message,
         timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
         plan: message.plan || null,
+        traces: Array.isArray(message.traces) ? message.traces : [],
+        evidence: Array.isArray(message.evidence) ? message.evidence : [],
         is_streaming: false,
         critical_streaming: false,
         positive_streaming: false,
@@ -762,6 +764,213 @@ function updateMultiAgentPlan(message, plan) {
     if (normalized) {
         message.plan = normalized;
     }
+}
+
+function normalizeTraceItems(traces) {
+    if (!Array.isArray(traces)) {
+        return [];
+    }
+
+    return traces
+        .map(trace => {
+            if (!trace || typeof trace !== 'object') {
+                return null;
+            }
+
+            return {
+                tool: typeof trace.tool === 'string' ? trace.tool.trim() : '',
+                query: typeof trace.query === 'string' ? trace.query.trim() : '',
+                status: typeof trace.status === 'string' ? trace.status.trim() : '',
+                result_count: Number.isFinite(trace.result_count) ? trace.result_count : 0,
+                duration_ms: Number.isFinite(trace.duration_ms) ? trace.duration_ms : null,
+                message: typeof trace.message === 'string' ? trace.message.trim() : ''
+            };
+        })
+        .filter(trace => trace && (trace.tool || trace.query || trace.message));
+}
+
+function normalizeEvidenceItems(evidence) {
+    if (!Array.isArray(evidence)) {
+        return [];
+    }
+
+    return evidence
+        .map(item => {
+            if (!item || typeof item !== 'object') {
+                return null;
+            }
+
+            return {
+                source: typeof item.source === 'string' ? item.source.trim() : '',
+                excerpt: typeof item.excerpt === 'string' ? item.excerpt.trim() : ''
+            };
+        })
+        .filter(item => item && item.source && item.excerpt);
+}
+
+function createDiagnosticsPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'diagnostics-panel';
+    panel.style.display = 'none';
+
+    const traceSection = document.createElement('div');
+    traceSection.className = 'diagnostics-section';
+
+    const traceTitle = document.createElement('div');
+    traceTitle.className = 'diagnostics-title';
+    traceTitle.textContent = t('trace_title');
+
+    const traceBody = document.createElement('div');
+    traceBody.className = 'diagnostics-body';
+
+    traceSection.appendChild(traceTitle);
+    traceSection.appendChild(traceBody);
+
+    const evidenceSection = document.createElement('div');
+    evidenceSection.className = 'diagnostics-section';
+
+    const evidenceTitle = document.createElement('div');
+    evidenceTitle.className = 'diagnostics-title';
+    evidenceTitle.textContent = t('evidence_title');
+
+    const evidenceBody = document.createElement('div');
+    evidenceBody.className = 'diagnostics-body';
+
+    evidenceSection.appendChild(evidenceTitle);
+    evidenceSection.appendChild(evidenceBody);
+
+    panel.appendChild(traceSection);
+    panel.appendChild(evidenceSection);
+
+    return {
+        panel,
+        traceSection,
+        traceBody,
+        evidenceSection,
+        evidenceBody
+    };
+}
+
+function getTraceToolLabel(tool) {
+    if (tool === 'search_tool') {
+        return t('trace_tool_search');
+    }
+    return tool || '-';
+}
+
+function getTraceStatusLabel(status) {
+    if (status === 'success') return t('trace_status_success');
+    if (status === 'no_results') return t('trace_status_no_results');
+    if (status === 'error') return t('trace_status_error');
+    return status || '-';
+}
+
+function renderTraceItems(container, traces) {
+    container.innerHTML = '';
+    if (!traces.length) {
+        return;
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'diagnostics-list';
+
+    traces.forEach(trace => {
+        const item = document.createElement('li');
+        item.className = 'diagnostics-item';
+
+        const heading = document.createElement('div');
+        heading.className = 'diagnostics-item-heading';
+        heading.textContent = getTraceToolLabel(trace.tool);
+
+        const query = document.createElement('div');
+        query.className = 'diagnostics-item-line';
+        query.textContent = `${t('trace_query')}: ${trace.query || '-'}`;
+
+        const metaParts = [
+            `${t('trace_status')}: ${getTraceStatusLabel(trace.status)}`,
+            `${t('trace_results')}: ${trace.result_count}`
+        ];
+        if (trace.duration_ms !== null) {
+            metaParts.push(`${t('trace_duration')}: ${trace.duration_ms}ms`);
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'diagnostics-item-line';
+        meta.textContent = metaParts.join(' / ');
+
+        item.appendChild(heading);
+        item.appendChild(query);
+        item.appendChild(meta);
+
+        if (trace.message) {
+            const note = document.createElement('div');
+            note.className = 'diagnostics-item-line';
+            note.textContent = `${t('trace_message')}: ${trace.message}`;
+            item.appendChild(note);
+        }
+
+        list.appendChild(item);
+    });
+
+    container.appendChild(list);
+}
+
+function renderEvidenceItems(container, evidence) {
+    container.innerHTML = '';
+    if (!evidence.length) {
+        return;
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'diagnostics-list';
+
+    evidence.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'diagnostics-item';
+
+        const source = document.createElement('div');
+        source.className = 'diagnostics-item-heading';
+        source.textContent = `${t('evidence_source')}: ${item.source}`;
+
+        const excerpt = document.createElement('div');
+        excerpt.className = 'diagnostics-item-line';
+        excerpt.textContent = item.excerpt;
+
+        li.appendChild(source);
+        li.appendChild(excerpt);
+        list.appendChild(li);
+    });
+
+    container.appendChild(list);
+}
+
+function applyGuidelineDiagnostics(refs, traces, evidence) {
+    if (!refs || !refs.panel) {
+        return { traces: [], evidence: [] };
+    }
+
+    const normalizedTraces = normalizeTraceItems(traces);
+    const normalizedEvidence = normalizeEvidenceItems(evidence);
+
+    renderTraceItems(refs.traceBody, normalizedTraces);
+    renderEvidenceItems(refs.evidenceBody, normalizedEvidence);
+
+    refs.traceSection.style.display = normalizedTraces.length ? 'block' : 'none';
+    refs.evidenceSection.style.display = normalizedEvidence.length ? 'block' : 'none';
+    refs.panel.style.display = normalizedTraces.length || normalizedEvidence.length ? 'block' : 'none';
+
+    return { traces: normalizedTraces, evidence: normalizedEvidence };
+}
+
+function updateGuidelineDiagnostics(message, traces = message.traces, evidence = message.evidence) {
+    if (!message || message.is_user) {
+        return;
+    }
+
+    const diagnosticsRefs = message.element && message.element.diagnostics ? message.element.diagnostics : null;
+    const normalized = applyGuidelineDiagnostics(diagnosticsRefs, traces, evidence);
+    message.traces = normalized.traces;
+    message.evidence = normalized.evidence;
 }
 
 function parseJsonLine(line) {
@@ -1512,6 +1721,8 @@ function addAiMessageGuideline() {
         is_user: false,
         content: '',
         plan: null,
+        traces: [],
+        evidence: [],
         timestamp: timestamp,
         is_streaming: true,
         element: null
@@ -1546,9 +1757,11 @@ function renderMessageGuideline(message) {
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
     let planRefs = null;
+    let diagnosticsRefs = null;
 
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
+        diagnosticsRefs = createDiagnosticsPanel();
     }
     
     if (message.is_user) {
@@ -1569,14 +1782,20 @@ function renderMessageGuideline(message) {
         contentDiv.appendChild(planRefs.panel);
     }
     contentDiv.appendChild(textDiv);
+    if (diagnosticsRefs) {
+        contentDiv.appendChild(diagnosticsRefs.panel);
+    }
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessagesGuideline.appendChild(wrapper);
     
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, diagnostics: diagnosticsRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
+    }
+    if (!message.is_user && (message.traces.length || message.evidence.length)) {
+        updateGuidelineDiagnostics(message);
     }
 }
 
@@ -1676,6 +1895,14 @@ async function streamGuidelineChat(prompt, aiMessage) {
         } else if (data.type === 'delta' && data.content) {
             aiMessage.content += data.content;
             updateMessageContentGuideline(aiMessage, aiMessage.content);
+            scrollToBottomGuideline();
+        } else if (data.type === 'trace' && data.trace) {
+            aiMessage.traces = [...(aiMessage.traces || []), data.trace];
+            updateGuidelineDiagnostics(aiMessage);
+            scrollToBottomGuideline();
+        } else if (data.type === 'evidence' && data.evidence) {
+            aiMessage.evidence = data.evidence;
+            updateGuidelineDiagnostics(aiMessage);
             scrollToBottomGuideline();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);

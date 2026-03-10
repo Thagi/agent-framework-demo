@@ -16,6 +16,8 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **RAG search (Text streaming)**: Referenced responses using Azure AI Search (optional)
 - **AI board meeting (GroupChatBuilder)**: The CEO, CTO, CFO, and COO speak in turn, building on each other's points, with the COO compiling the implementation plan. (with `tone`)
 - **Plan visualization**: Each mode shows goal / steps / tools / completion criteria before the answer streams
+- **Approval flow**: Multi-agent analysis, the board workflow, and approval-gated models require `approve / reject / revise` before execution
+- **Execution trace and evidence view**: RAG search shows query, hit count, duration, and supporting document excerpts separately from the answer
 - **Model selection**: The frontend receives the available model list and provider metadata from the backend, so selectable models stay aligned with backend configuration
 - **Conversation memory**: The Backend keeps per-session history with Agent Framework `AgentThread`, and the Frontend re-renders server-side message history on reload
 

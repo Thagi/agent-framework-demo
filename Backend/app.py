@@ -3,8 +3,9 @@ import re
 import time
 import json
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -65,6 +66,8 @@ MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
 
 session_store = SessionStore(max_messages=SESSION_HISTORY_MESSAGES)
+SEARCH_EXCERPT_LIMIT = max(int(os.getenv("SEARCH_EXCERPT_LIMIT", "280")), 80)
+SEARCH_TRACE_CONTEXT: ContextVar[list[dict[str, Any]] | None] = ContextVar("search_trace_context", default=None)
 
 MODEL_LABEL_DEFAULTS = {
     "gpt-4.1": "GPT-4.1",
@@ -488,6 +491,36 @@ def _coerce_plan_text(value: object, limit: int = 240) -> str:
     return text[:limit]
 
 
+def _compact_text(value: object, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def _append_search_trace(trace: dict[str, Any]) -> None:
+    collector = SEARCH_TRACE_CONTEXT.get()
+    if collector is not None:
+        collector.append(trace)
+
+
+def _collect_evidence_from_traces(traces: list[dict[str, Any]]) -> list[dict[str, str]]:
+    evidence_items: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for trace in traces:
+        for item in trace.get("results", []):
+            source = _compact_text(item.get("source"), limit=160)
+            excerpt = _compact_text(item.get("excerpt"), limit=SEARCH_EXCERPT_LIMIT)
+            if not source or not excerpt:
+                continue
+            key = (source, excerpt)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence_items.append({"source": source, "excerpt": excerpt})
+
+    return evidence_items
+
+
 def _normalize_plan_items(values: object, *, max_items: int, fallback_prefix: str) -> list[str]:
     candidates: list[object]
     if isinstance(values, list):
@@ -632,8 +665,20 @@ def search_tool(
     query: Annotated[str, Field(description="Search query")],
 ) -> str:
     """Tool to search for guidelines in the financial sector"""
+    started_at = time.time()
     try:
         if not query or not query.strip():
+            _append_search_trace(
+                {
+                    "tool": "search_tool",
+                    "query": "",
+                    "status": "error",
+                    "result_count": 0,
+                    "duration_ms": round((time.time() - started_at) * 1000, 2),
+                    "results": [],
+                    "message": get_text('search_empty_query', LANGUAGE),
+                }
+            )
             return get_text('search_empty_query', LANGUAGE)
         
         # Initialize Azure AI Search client
@@ -654,6 +699,7 @@ def search_tool(
         
         # Format results
         formatted_results = []
+        structured_results = []
         file_label = get_text('search_file_label', LANGUAGE)
         content_label = get_text('search_content_label', LANGUAGE)
         
@@ -662,16 +708,53 @@ def search_tool(
             file_name = result.get("metadata_storage_name", "Unknown")
             if content and content.strip():  # Only add non-empty content
                 formatted_results.append(f"{file_label}: {file_name}\n{content_label}: {content}\n")
+                structured_results.append(
+                    {
+                        "source": _compact_text(file_name, limit=160),
+                        "excerpt": _compact_text(content, limit=SEARCH_EXCERPT_LIMIT),
+                    }
+                )
         
         if formatted_results:
             logger.info(get_text('log_search_success', LANGUAGE, count=len(formatted_results)))
+            _append_search_trace(
+                {
+                    "tool": "search_tool",
+                    "query": _compact_text(query, limit=200),
+                    "status": "success",
+                    "result_count": len(structured_results),
+                    "duration_ms": round((time.time() - started_at) * 1000, 2),
+                    "results": structured_results,
+                }
+            )
             return "\n---\n".join(formatted_results)
         else:
+            _append_search_trace(
+                {
+                    "tool": "search_tool",
+                    "query": _compact_text(query, limit=200),
+                    "status": "no_results",
+                    "result_count": 0,
+                    "duration_ms": round((time.time() - started_at) * 1000, 2),
+                    "results": [],
+                }
+            )
             return get_text('search_no_results', LANGUAGE, query=query)
             
     except Exception as e:
         error_msg = get_text('search_error', LANGUAGE, error=str(e))
         logger.error(error_msg)
+        _append_search_trace(
+            {
+                "tool": "search_tool",
+                "query": _compact_text(query, limit=200),
+                "status": "error",
+                "result_count": 0,
+                "duration_ms": round((time.time() - started_at) * 1000, 2),
+                "results": [],
+                "message": error_msg,
+            }
+        )
         return error_msg
 
 
@@ -770,6 +853,7 @@ async def api_guideline_stream(request: Request):
 
         session = await session_store.get_session(MODE_GUIDELINE, session_id)
         async with session.lock:
+            trace_token = SEARCH_TRACE_CONTEXT.set([])
             try:
                 plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
@@ -797,6 +881,14 @@ async def api_guideline_stream(request: Request):
                         chunk_count += 1
                         yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
+                search_traces = SEARCH_TRACE_CONTEXT.get() or []
+                for trace in search_traces:
+                    yield json.dumps({"type": "trace", "trace": trace}, ensure_ascii=False) + "\n"
+
+                evidence_items = _collect_evidence_from_traces(search_traces)
+                if evidence_items:
+                    yield json.dumps({"type": "evidence", "evidence": evidence_items}, ensure_ascii=False) + "\n"
+
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
@@ -805,6 +897,8 @@ async def api_guideline_stream(request: Request):
                 error_msg = get_text('error_search_processing', LANGUAGE, error=str(e))
                 logger.error(f"[{request_id}] ❌ {error_msg}")
                 yield json.dumps({"type": "error", "message": error_msg}, ensure_ascii=False) + "\n"
+            finally:
+                SEARCH_TRACE_CONTEXT.reset(trace_token)
 
     return StreamingResponse(generator(), media_type="application/x-ndjson")
 

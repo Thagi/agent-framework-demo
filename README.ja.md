@@ -17,6 +17,7 @@
 - **AI役員会議（GroupChatBuilder）**: CEO/CTO/CFO/COO が前の人の意見を踏まえながら順番に発言し、COOが実行計画をまとめる（tone指定あり）
 - **計画可視化**: 各モードで回答前の goal / steps / tools / completion criteria を表示
 - **承認フロー**: マルチエージェント分析 / AI役員会議 / 承認対象モデルの実行前に `approve / reject / revise` を要求
+- **実行ログと根拠表示**: RAG検索で検索語・結果件数・所要時間・参照文書の抜粋を回答と分離して表示
 - **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`で会話履歴を保持し、Frontendもサーバーメモリ上の履歴を再描画
 

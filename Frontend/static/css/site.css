@@ -994,6 +994,60 @@ body.guideline-mode .chat-header {
     color: #fff;
 }
 
+.diagnostics-panel {
+    background: rgba(248, 250, 252, 0.95);
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    margin-top: 0.9rem;
+}
+
+.diagnostics-section + .diagnostics-section {
+    margin-top: 0.85rem;
+}
+
+.diagnostics-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #475569;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 0.35rem;
+}
+
+.diagnostics-body {
+    font-size: 0.92rem;
+    color: #1f2937;
+}
+
+.diagnostics-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.diagnostics-item {
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(226, 232, 240, 0.9);
+    border-radius: 12px;
+    padding: 0.75rem 0.8rem;
+}
+
+.diagnostics-item + .diagnostics-item {
+    margin-top: 0.55rem;
+}
+
+.diagnostics-item-heading {
+    font-weight: 700;
+    color: #0f172a;
+    margin-bottom: 0.2rem;
+}
+
+.diagnostics-item-line {
+    color: #475569;
+    line-height: 1.5;
+}
+
 .agents-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
