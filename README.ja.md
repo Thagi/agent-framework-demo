@@ -11,7 +11,7 @@
 - **マルチエージェント分析（ConcurrentBuilder）**: 2エージェントを並列実行（Critical / Positive）し、最後にSynthesizerが統合
 - **RAG検索（Text streaming）**: Azure AI Search（任意）を使った参照（出典）付き応答
 - **AI役員会議（GroupChatBuilder）**: CEO/CTO/CFO/COO が前の人の意見を踏まえながら順番に発言し、COOが実行計画をまとめる（tone指定あり）
-- **モデル選択**: Frontend は Backend から利用可能モデル一覧を受け取り、選択肢を Backend 設定と自動的に揃える
+- **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`で会話履歴を保持し、Frontendもサーバーメモリ上の履歴を再描画
 
 
@@ -29,8 +29,8 @@
 - **Backend**: FastAPI（port 8000）
     - Microsoft Agent Frameworkを使ってエージェント実行
     - セッション単位で`AgentThread`を保持し、会話履歴を次の回答へ反映
-    - `.env` のモデル別 Azure OpenAI 設定を読み込み、安全なモデル一覧だけを Frontend に公開
-    - Azure OpenAIを呼び出し、結果をストリーミング返却
+    - `.env` の provider 別モデル設定を読み込み、安全なモデル一覧だけを Frontend に公開
+    - Azure OpenAI または OpenAI を呼び出し、結果をストリーミング返却
 
 主要な呼び出し経路（例: 通常チャット）:
 
@@ -38,7 +38,7 @@
 Browser (Fetch streaming)
     -> Frontend: POST /api/chat/stream
         -> Backend: POST /api/stream
-            -> Azure OpenAI
+            -> 設定済みモデル provider（Azure OpenAI / OpenAI）
 ```
 
 ## 必要要件
@@ -65,30 +65,47 @@ pip install -r .\Frontend\requirements.txt
 
 > `start.ps1` / `start.bat` は、現在のPython実行環境でそのまま起動します。実行前に venv/conda などの環境を有効化してください。
 
-### 2) 環境変数（Backend: Azure OpenAI）
+### 2) 環境変数（Backend: Azure OpenAI / OpenAI）
 
 Backendは起動時に`Backend/.env`を読み込みます。
 `Backend/.env.example` を `Backend/.env` にコピーして値を設定してください（**秘密情報はコミットしない**）。
 
 ```
-AZURE_OPENAI_MODELS=gpt-4.1-mini,gpt-4.1
-DEFAULT_MODEL=gpt-4.1-mini
+LLM_MODELS=azure-gpt-4-1-mini,openai-gpt-4-1-mini
+DEFAULT_MODEL=azure-gpt-4-1-mini
 
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_KEY=...
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
+LLM_MODEL_AZURE_GPT_4_1_MINI_PROVIDER=azure
+LLM_MODEL_AZURE_GPT_4_1_MINI_LABEL=GPT-4.1 Mini (Azure OpenAI)
+LLM_MODEL_AZURE_GPT_4_1_MINI_API_KEY=...
+LLM_MODEL_AZURE_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
+LLM_MODEL_AZURE_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
+LLM_MODEL_AZURE_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
 
-AZURE_OPENAI_MODEL_GPT_4_1_API_KEY=...
-AZURE_OPENAI_MODEL_GPT_4_1_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_MODEL_GPT_4_1_API_VERSION=2024-12-01-preview
-AZURE_OPENAI_MODEL_GPT_4_1_DEPLOYMENT=<your-gpt-4-1-deployment>
+LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_4_1_MINI_LABEL=GPT-4.1 Mini (OpenAI)
+LLM_MODEL_OPENAI_GPT_4_1_MINI_API_KEY=...
+LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID=gpt-4.1-mini
+# OpenAI 互換ゲートウェイを使う場合は任意で設定:
+# LLM_MODEL_OPENAI_GPT_4_1_MINI_ENDPOINT=https://api.openai.com/v1
+# LLM_MODEL_OPENAI_GPT_4_1_MINI_ORG_ID=org_xxx
 ```
 
 モデル別 env のサフィックス変換ルール:
 
-- `gpt-4.1-mini` -> `GPT_4_1_MINI`
-- `gpt-4.1` -> `GPT_4_1`
+- `azure-gpt-4-1-mini` -> `AZURE_GPT_4_1_MINI`
+- `openai-gpt-4-1-mini` -> `OPENAI_GPT_4_1_MINI`
+
+provider ごとの必須項目:
+
+- `azure`: `PROVIDER`, `API_KEY`, `ENDPOINT`, `DEPLOYMENT`
+- `openai`: `PROVIDER`, `API_KEY`, `MODEL_ID`
+
+補足:
+
+- `LLM_MODELS` は Frontend に公開するモデル別名の一覧です。同じモデル系統を Azure/OpenAI の両方で出したい場合は、別名を重複しないようにしてください。
+- `DEFAULT_MODEL` は `LLM_MODELS` に含まれる別名を指定してください。
+- `ENDPOINT` は Azure では必須、OpenAI では任意です。OpenAI では API の base URL として扱います。
+- `API_VERSION` は Azure モデルでのみ利用します。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 
@@ -109,7 +126,7 @@ LANGUAGE=en
 
 ※Backendは起動時に`LANGUAGE`を読み込むため、変更後はBackendの再起動が必要です。
 
-（任意）既存環境向けの旧形式 env もフォールバックとして引き続き利用できます:
+（任意）既存環境向けの Azure 専用旧形式 env もフォールバックとして引き続き利用できます:
 
 ```
 AZURE_OPENAI_API_KEY=...
@@ -214,10 +231,20 @@ python .\Frontend\app.py
 PowerShellで以下を設定してから実行します（スクリプトは**Backend初回作成時**に必須チェックを行います）。
 
 ```powershell
-$env:AZURE_OPENAI_API_KEY = "..."
-$env:AZURE_OPENAI_ENDPOINT = "https://<your-resource>.openai.azure.com/"
-$env:AZURE_OPENAI_DEPLOYMENT = "..."
+$env:LLM_MODELS = "azure-gpt-4-1-mini,openai-gpt-4-1-mini"
+$env:DEFAULT_MODEL = "azure-gpt-4-1-mini"
+
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_PROVIDER = "azure"
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_API_KEY = "..."
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_ENDPOINT = "https://<your-resource>.openai.azure.com/"
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_DEPLOYMENT = "..."
+
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER = "openai"
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_API_KEY = "..."
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID = "gpt-4.1-mini"
 ```
+
+デプロイスクリプトは旧来の Azure 専用 `AZURE_OPENAI_*` 環境変数もフォールバックとして受け付けます。
 
 （任意）Azure AI Search:
 

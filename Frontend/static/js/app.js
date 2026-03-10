@@ -85,6 +85,16 @@ function renderModelSelects() {
             const option = document.createElement('option');
             option.value = model.id;
             option.textContent = model.label || model.id;
+            if (model.provider) {
+                option.dataset.provider = model.provider;
+            }
+            if (model.target) {
+                option.dataset.target = model.target;
+            }
+            if (model.provider_label || model.target) {
+                const details = [model.provider_label, model.target].filter(Boolean).join(': ');
+                option.title = details;
+            }
             if (previousValue && previousValue === model.id) {
                 option.selected = true;
             }

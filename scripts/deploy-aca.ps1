@@ -102,6 +102,205 @@ function Get-ContainerAppExists {
   }
 }
 
+function Get-ModelEnvSuffix {
+  param([string]$ModelId)
+  $normalized = [regex]::Replace($ModelId, "[^A-Za-z0-9]+", "_").Trim("_").ToUpperInvariant()
+  if ([string]::IsNullOrWhiteSpace($normalized)) {
+    return "DEFAULT"
+  }
+  return $normalized
+}
+
+function Get-SecretName {
+  param([string]$EnvName)
+  return ($EnvName.ToLowerInvariant() -replace "[^a-z0-9]+", "-").Trim("-")
+}
+
+function Add-PlainEnvVar {
+  param(
+    [System.Collections.Generic.List[string]]$EnvVars,
+    [string]$Name
+  )
+  $value = [Environment]::GetEnvironmentVariable($Name)
+  if (-not [string]::IsNullOrWhiteSpace($value)) {
+    $EnvVars.Add("${Name}=$value")
+  }
+}
+
+function Add-SecretEnvVar {
+  param(
+    [System.Collections.Generic.List[string]]$EnvVars,
+    [System.Collections.Generic.List[string]]$Secrets,
+    [string]$Name
+  )
+  $value = [Environment]::GetEnvironmentVariable($Name)
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return
+  }
+
+  $secretName = Get-SecretName -EnvName $Name
+  $Secrets.Add("${secretName}=$value")
+  $EnvVars.Add("${Name}=secretref:${secretName}")
+}
+
+function Get-BackendDeploymentConfig {
+  param([switch]$RequireModelConfig)
+
+  $secrets = [System.Collections.Generic.List[string]]::new()
+  $envVars = [System.Collections.Generic.List[string]]::new()
+  $missingEnvVars = [System.Collections.Generic.List[string]]::new()
+  $hasModelConfig = $false
+
+  $llmModelsRaw = [Environment]::GetEnvironmentVariable("LLM_MODELS")
+  if (-not [string]::IsNullOrWhiteSpace($llmModelsRaw)) {
+    $hasModelConfig = $true
+    $envVars.Add("LLM_MODELS=$llmModelsRaw")
+    Add-PlainEnvVar -EnvVars $envVars -Name "DEFAULT_MODEL"
+
+    $modelIds = $llmModelsRaw -split "," | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($modelId in $modelIds) {
+      $suffix = Get-ModelEnvSuffix -ModelId $modelId
+      $prefix = "LLM_MODEL_${suffix}_"
+
+      $providerName = "${prefix}PROVIDER"
+      $provider = [Environment]::GetEnvironmentVariable($providerName)
+      if ([string]::IsNullOrWhiteSpace($provider)) {
+        $missingEnvVars.Add($providerName)
+        continue
+      }
+
+      $provider = $provider.Trim().ToLowerInvariant()
+      $envVars.Add("${providerName}=$provider")
+      Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}LABEL"
+      Add-SecretEnvVar -EnvVars $envVars -Secrets $secrets -Name "${prefix}API_KEY"
+
+      switch ($provider) {
+        "azure" {
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}ENDPOINT"
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}API_VERSION"
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}DEPLOYMENT"
+
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("${prefix}API_KEY"))) {
+            $missingEnvVars.Add("${prefix}API_KEY")
+          }
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("${prefix}ENDPOINT"))) {
+            $missingEnvVars.Add("${prefix}ENDPOINT")
+          }
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("${prefix}DEPLOYMENT"))) {
+            $missingEnvVars.Add("${prefix}DEPLOYMENT")
+          }
+        }
+        "openai" {
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}MODEL_ID"
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}ENDPOINT"
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}BASE_URL"
+          Add-PlainEnvVar -EnvVars $envVars -Name "${prefix}ORG_ID"
+
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("${prefix}API_KEY"))) {
+            $missingEnvVars.Add("${prefix}API_KEY")
+          }
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("${prefix}MODEL_ID"))) {
+            $missingEnvVars.Add("${prefix}MODEL_ID")
+          }
+        }
+        default {
+          $missingEnvVars.Add("${prefix}PROVIDER(azure|openai)")
+        }
+      }
+    }
+  }
+  else {
+    $legacySignals = @(
+      [Environment]::GetEnvironmentVariable("AZURE_OPENAI_API_KEY"),
+      [Environment]::GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"),
+      [Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT"),
+      [Environment]::GetEnvironmentVariable("AZURE_OPENAI_MODELS")
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+
+    if ($legacySignals.Count -gt 0) {
+      $hasModelConfig = $true
+      Add-PlainEnvVar -EnvVars $envVars -Name "DEFAULT_MODEL"
+
+      $legacyNamedModelsRaw = [Environment]::GetEnvironmentVariable("AZURE_OPENAI_MODELS")
+      if (-not [string]::IsNullOrWhiteSpace($legacyNamedModelsRaw)) {
+        $envVars.Add("AZURE_OPENAI_MODELS=$legacyNamedModelsRaw")
+        $legacyModelIds = $legacyNamedModelsRaw -split "," |
+          ForEach-Object { $_.Trim() } |
+          Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        foreach ($modelId in $legacyModelIds) {
+          $suffix = Get-ModelEnvSuffix -ModelId $modelId
+          Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_MODEL_${suffix}_LABEL"
+          Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_MODEL_${suffix}_ENDPOINT"
+          Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_MODEL_${suffix}_API_VERSION"
+          Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_MODEL_${suffix}_DEPLOYMENT"
+          Add-SecretEnvVar -EnvVars $envVars -Secrets $secrets -Name "AZURE_OPENAI_MODEL_${suffix}_API_KEY"
+
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_MODEL_${suffix}_API_KEY"))) {
+            $missingEnvVars.Add("AZURE_OPENAI_MODEL_${suffix}_API_KEY")
+          }
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_MODEL_${suffix}_ENDPOINT"))) {
+            $missingEnvVars.Add("AZURE_OPENAI_MODEL_${suffix}_ENDPOINT")
+          }
+          if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_MODEL_${suffix}_DEPLOYMENT"))) {
+            $missingEnvVars.Add("AZURE_OPENAI_MODEL_${suffix}_DEPLOYMENT")
+          }
+        }
+      }
+      else {
+        Add-SecretEnvVar -EnvVars $envVars -Secrets $secrets -Name "AZURE_OPENAI_API_KEY"
+        Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_ENDPOINT"
+        Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_API_VERSION"
+        Add-PlainEnvVar -EnvVars $envVars -Name "AZURE_OPENAI_DEPLOYMENT"
+
+        $legacyOptionalNames = @(
+          "AZURE_OPENAI_DEPLOYMENT_GPT41",
+          "AZURE_OPENAI_DEPLOYMENT_GPT41_MINI",
+          "AZURE_OPENAI_DEPLOYMENT_GPT41_NANO",
+          "AZURE_OPENAI_DEPLOYMENT_GPT52",
+          "AZURE_OPENAI_DEPLOYMENT_GPT52_CHAT"
+        )
+        foreach ($name in $legacyOptionalNames) {
+          Add-PlainEnvVar -EnvVars $envVars -Name $name
+        }
+
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_API_KEY"))) {
+          $missingEnvVars.Add("AZURE_OPENAI_API_KEY")
+        }
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"))) {
+          $missingEnvVars.Add("AZURE_OPENAI_ENDPOINT")
+        }
+        if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT")) -and
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_GPT41")) -and
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_GPT41_MINI")) -and
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_GPT41_NANO")) -and
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_GPT52")) -and
+            [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_GPT52_CHAT"))) {
+          $missingEnvVars.Add("AZURE_OPENAI_DEPLOYMENT or AZURE_OPENAI_DEPLOYMENT_*")
+        }
+      }
+    }
+    elseif ($RequireModelConfig) {
+      $missingEnvVars.Add("LLM_MODELS (or legacy AZURE_OPENAI_* settings)")
+    }
+  }
+
+  Add-PlainEnvVar -EnvVars $envVars -Name "SEARCH_ENDPOINT"
+  Add-SecretEnvVar -EnvVars $envVars -Secrets $secrets -Name "SEARCH_API_KEY"
+  Add-PlainEnvVar -EnvVars $envVars -Name "SEARCH_INDEX_NAME"
+  Add-PlainEnvVar -EnvVars $envVars -Name "SEARCH_SEMANTIC_CONFIG"
+  Add-PlainEnvVar -EnvVars $envVars -Name "LANGUAGE"
+  Add-PlainEnvVar -EnvVars $envVars -Name "SESSION_HISTORY_MESSAGES"
+  Add-PlainEnvVar -EnvVars $envVars -Name "PROMPT_HISTORY_MESSAGES"
+  $envVars.Add("PORT=8000")
+
+  return [PSCustomObject]@{
+    HasModelConfig = $hasModelConfig
+    Secrets = $secrets.ToArray()
+    EnvVars = $envVars.ToArray()
+    MissingEnvVars = $missingEnvVars.ToArray()
+  }
+}
+
 # ============================================================================
 # Initialize Azure CLI & Subscription
 # ============================================================================
@@ -130,20 +329,10 @@ $backendExists = Get-ContainerAppExists -ResourceGroup $ResourceGroup -AppName $
 
 if (-not $FrontendOnly -and -not $backendExists) {
   Write-Step "Backend does not exist - will create. Validating required environment variables..."
-  
-  $missingEnvVars = @()
-  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_API_KEY"))) {
-    $missingEnvVars += "AZURE_OPENAI_API_KEY"
-  }
-  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT"))) {
-    $missingEnvVars += "AZURE_OPENAI_ENDPOINT"
-  }
-  if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT"))) {
-    $missingEnvVars += "AZURE_OPENAI_DEPLOYMENT"
-  }
+  $backendConfig = Get-BackendDeploymentConfig -RequireModelConfig
 
-  if ($missingEnvVars.Count -gt 0) {
-    Write-Error-Exit "Backend creation requires environment variables: $($missingEnvVars -join ', '). Please set them and try again."
+  if ($backendConfig.MissingEnvVars.Count -gt 0) {
+    Write-Error-Exit "Backend creation requires environment variables: $($backendConfig.MissingEnvVars -join ', '). Please set them and try again."
   }
 }
 
@@ -231,6 +420,16 @@ if (-not $acaEnvExists) {
 # ============================================================================
 
 if (-not $FrontendOnly) {
+  if (-not $backendExists) {
+    $backendConfig = Get-BackendDeploymentConfig -RequireModelConfig
+  }
+  else {
+    $backendConfig = Get-BackendDeploymentConfig
+    if ($backendConfig.HasModelConfig -and $backendConfig.MissingEnvVars.Count -gt 0) {
+      Write-Error-Exit "Backend update requires complete model environment variables when LLM settings are provided: $($backendConfig.MissingEnvVars -join ', ')."
+    }
+  }
+
   if ($backendExists) {
     Write-Step "Updating existing Backend: $BackendAppName"
     Suppress-AzWarnings {
@@ -241,42 +440,23 @@ if (-not $FrontendOnly) {
         --username $acrUsername `
         --password $acrPassword 2>$null | Out-Null
 
+      if ($backendConfig.Secrets.Count -gt 0) {
+        az containerapp secret set `
+          -g $ResourceGroup `
+          -n $BackendAppName `
+          --secrets $backendConfig.Secrets 2>$null | Out-Null
+      }
+
       az containerapp update `
         -g $ResourceGroup `
         -n $BackendAppName `
         --image $backendImage `
-        --set-env-vars PORT=8000 2>$null | Out-Null
+        --set-env-vars $backendConfig.EnvVars 2>$null | Out-Null
     }
     Write-Host "  Updated to image: $backendImage" -ForegroundColor Gray
   }
   else {
     Write-Step "Creating new Backend: $BackendAppName"
-    
-    $aoaiKey = [Environment]::GetEnvironmentVariable("AZURE_OPENAI_API_KEY")
-    $aoaiEndpoint = [Environment]::GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT")
-    $aoaiDeployment = [Environment]::GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT")
-
-    $secrets = @("aoai-key=$aoaiKey")
-    $envVars = @(
-      "AZURE_OPENAI_API_KEY=secretref:aoai-key",
-      "AZURE_OPENAI_ENDPOINT=$aoaiEndpoint",
-      "AZURE_OPENAI_DEPLOYMENT=$aoaiDeployment",
-      "PORT=8000"
-    )
-
-    # Optional: Add Search settings if present
-    $searchEndpoint = [Environment]::GetEnvironmentVariable("SEARCH_ENDPOINT")
-    $searchApiKey = [Environment]::GetEnvironmentVariable("SEARCH_API_KEY")
-    $searchIndexName = [Environment]::GetEnvironmentVariable("SEARCH_INDEX_NAME")
-    $searchSemanticConfig = [Environment]::GetEnvironmentVariable("SEARCH_SEMANTIC_CONFIG")
-
-    if (-not [string]::IsNullOrWhiteSpace($searchApiKey)) {
-      $secrets += "search-api-key=$searchApiKey"
-      $envVars += "SEARCH_API_KEY=secretref:search-api-key"
-    }
-    if (-not [string]::IsNullOrWhiteSpace($searchEndpoint)) { $envVars += "SEARCH_ENDPOINT=$searchEndpoint" }
-    if (-not [string]::IsNullOrWhiteSpace($searchIndexName)) { $envVars += "SEARCH_INDEX_NAME=$searchIndexName" }
-    if (-not [string]::IsNullOrWhiteSpace($searchSemanticConfig)) { $envVars += "SEARCH_SEMANTIC_CONFIG=$searchSemanticConfig" }
 
     Suppress-AzWarnings {
       az containerapp create `
@@ -289,8 +469,8 @@ if (-not $FrontendOnly) {
         --registry-server $acrLoginServer `
         --registry-username $acrUsername `
         --registry-password $acrPassword `
-        --secrets $secrets `
-        --env-vars $envVars 2>$null | Out-Null
+        --secrets $backendConfig.Secrets `
+        --env-vars $backendConfig.EnvVars 2>$null | Out-Null
     }
   }
 }

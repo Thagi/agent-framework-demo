@@ -222,7 +222,7 @@ PLAN_READY: 上記プランで実行準備完了
         'search_content_label': "内容",
         
         # エラーメッセージ
-        'error_config_missing': "Error: Azure OpenAI configuration is missing",
+        'error_config_missing': "Error: model configuration is missing",
         'error_search_processing': "検索処理中にエラーが発生しました: {error}",
         'error_retry_message': "\n\nエラー: {error}\n\n検索条件を変更してもう一度お試しください。",
         'error_idobata_processing': "AI役員会議の処理中にエラーが発生しました: {error}",
@@ -231,7 +231,7 @@ PLAN_READY: 上記プランで実行準備完了
         # ログメッセージ
         'log_request_received': "⏱️ リクエスト受信",
         'log_request_parsed': "⏱️ リクエスト解析完了 ({time}ms)",
-        'log_model_selected': "🧠 モデル選択: {model} -> デプロイメント: {deployment}",
+        'log_model_selected': "🧠 モデル選択: {model} -> {provider}: {target}",
         'log_model_info': "🧠 model={model}",
         'log_agent_creating': "🤖 エージェント作成開始",
         'log_agent_created': "⏱️ エージェント作成完了 ({time}ms)",
@@ -496,7 +496,7 @@ Present a concrete executable plan.""",
         'search_content_label': "Content",
         
         # Error Messages
-        'error_config_missing': "Error: Azure OpenAI configuration is missing",
+        'error_config_missing': "Error: model configuration is missing",
         'error_search_processing': "An error occurred during search processing: {error}",
         'error_retry_message': "\n\nError: {error}\n\nPlease modify the search criteria and try again.",
         'error_idobata_processing': "An error occurred during AI board meeting processing: {error}",
@@ -505,7 +505,7 @@ Present a concrete executable plan.""",
         # Log Messages
         'log_request_received': "⏱️ Request received",
         'log_request_parsed': "⏱️ Request parsed ({time}ms)",
-        'log_model_selected': "🧠 Model selected: {model} -> Deployment: {deployment}",
+        'log_model_selected': "🧠 Model selected: {model} -> {provider}: {target}",
         'log_model_info': "🧠 model={model}",
         'log_agent_creating': "🤖 Creating agent",
         'log_agent_created': "⏱️ Agent created ({time}ms)",

@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from agent_framework import ChatAgent, ChatMessage, ConcurrentBuilder, AgentRunUpdateEvent, WorkflowOutputEvent, GroupChatBuilder
 from agent_framework.azure import AzureOpenAIChatClient
+from agent_framework.openai import OpenAIChatClient
 # from agent_framework.azure import AzureAISearchContextProvider
 from typing import Annotated
 from pydantic import Field
@@ -68,16 +69,33 @@ MODEL_LABEL_DEFAULTS = {
     "gpt-5.2": "GPT-5.2",
     "gpt-5.2-chat": "GPT-5.2 Chat",
 }
+MODEL_PROVIDER_AZURE = "azure"
+MODEL_PROVIDER_OPENAI = "openai"
+MODEL_PROVIDER_LABELS = {
+    MODEL_PROVIDER_AZURE: "Azure OpenAI",
+    MODEL_PROVIDER_OPENAI: "OpenAI",
+}
 
 
 @dataclass(frozen=True)
 class ModelConfig:
-    name: str
+    model_id: str
     label: str
+    provider: str
     api_key: str
-    endpoint: str
-    deployment_name: str
+    endpoint: str | None = None
+    deployment_name: str | None = None
     api_version: str | None = None
+    provider_model_id: str | None = None
+    org_id: str | None = None
+
+    @property
+    def provider_label(self) -> str:
+        return MODEL_PROVIDER_LABELS.get(self.provider, self.provider)
+
+    @property
+    def target_name(self) -> str:
+        return self.deployment_name or self.provider_model_id or self.model_id
 
 
 def _parse_csv_env(name: str) -> list[str]:
@@ -90,25 +108,114 @@ def _model_env_suffix(model_name: str) -> str:
     return normalized or "DEFAULT"
 
 
-def _build_model_config(model_name: str) -> ModelConfig | None:
-    suffix = _model_env_suffix(model_name)
+def _default_model_label(model_id: str, provider: str, reference_name: str | None = None) -> str:
+    base_name = MODEL_LABEL_DEFAULTS.get(model_id)
+    if not base_name and reference_name:
+        base_name = MODEL_LABEL_DEFAULTS.get(reference_name)
+    if not base_name:
+        base_name = model_id
+    return f"{base_name} ({MODEL_PROVIDER_LABELS.get(provider, provider)})"
+
+
+def _warn_incomplete_model_config(model_id: str, prefix: str, configured_values: dict[str, str | None], required_keys: list[str]) -> None:
+    if not any(value for value in configured_values.values()):
+        return
+
+    missing = [key for key in required_keys if not configured_values.get(key)]
+    if missing:
+        logger.warning(
+            "Skipping model '%s': missing %s in env prefix %s",
+            model_id,
+            ", ".join(missing),
+            prefix,
+        )
+
+
+def _build_model_config(model_id: str) -> ModelConfig | None:
+    suffix = _model_env_suffix(model_id)
+    prefix = f"LLM_MODEL_{suffix}_"
+
+    provider = os.getenv(f"{prefix}PROVIDER", "").strip().lower()
+    api_key = os.getenv(f"{prefix}API_KEY", "").strip()
+    endpoint = os.getenv(f"{prefix}ENDPOINT", "").strip()
+    base_url = os.getenv(f"{prefix}BASE_URL", "").strip()
+    api_version = os.getenv(f"{prefix}API_VERSION", "").strip() or None
+    deployment_name = os.getenv(f"{prefix}DEPLOYMENT", "").strip() or None
+    provider_model_id = os.getenv(f"{prefix}MODEL_ID", "").strip() or None
+    org_id = os.getenv(f"{prefix}ORG_ID", "").strip() or None
+    label = os.getenv(f"{prefix}LABEL", "").strip()
+
+    if provider == MODEL_PROVIDER_AZURE:
+        configured_values = {
+            "PROVIDER": provider,
+            "API_KEY": api_key,
+            "ENDPOINT": endpoint,
+            "DEPLOYMENT": deployment_name,
+            "API_VERSION": api_version,
+        }
+        if api_key and endpoint and deployment_name:
+            return ModelConfig(
+                model_id=model_id,
+                label=label or _default_model_label(model_id, provider),
+                provider=provider,
+                api_key=api_key,
+                endpoint=endpoint,
+                deployment_name=deployment_name,
+                api_version=api_version,
+            )
+        _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "ENDPOINT", "DEPLOYMENT"])
+        return None
+
+    if provider == MODEL_PROVIDER_OPENAI:
+        resolved_endpoint = endpoint or base_url or None
+        configured_values = {
+            "PROVIDER": provider,
+            "API_KEY": api_key,
+            "MODEL_ID": provider_model_id,
+            "ENDPOINT": resolved_endpoint,
+            "ORG_ID": org_id,
+        }
+        if api_key and provider_model_id:
+            return ModelConfig(
+                model_id=model_id,
+                label=label or _default_model_label(model_id, provider, reference_name=provider_model_id),
+                provider=provider,
+                api_key=api_key,
+                endpoint=resolved_endpoint,
+                provider_model_id=provider_model_id,
+                org_id=org_id,
+            )
+        _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "MODEL_ID"])
+        return None
+
+    configured_values = {
+        "PROVIDER": provider,
+        "API_KEY": api_key,
+        "ENDPOINT": endpoint or base_url,
+        "API_VERSION": api_version,
+        "DEPLOYMENT": deployment_name,
+        "MODEL_ID": provider_model_id,
+        "ORG_ID": org_id,
+        "LABEL": label,
+    }
+    if any(value for value in configured_values.values()):
+        logger.warning(
+            "Skipping model '%s': unsupported or missing PROVIDER in env prefix %s",
+            model_id,
+            prefix,
+        )
+    return None
+
+
+def _build_legacy_azure_model_config(model_id: str) -> ModelConfig | None:
+    suffix = _model_env_suffix(model_id)
     prefix = f"AZURE_OPENAI_MODEL_{suffix}_"
 
     api_key = os.getenv(f"{prefix}API_KEY", "").strip()
     endpoint = os.getenv(f"{prefix}ENDPOINT", "").strip()
     deployment_name = os.getenv(f"{prefix}DEPLOYMENT", "").strip()
     api_version = os.getenv(f"{prefix}API_VERSION", "").strip() or None
-    label = os.getenv(f"{prefix}LABEL", "").strip() or MODEL_LABEL_DEFAULTS.get(model_name, model_name)
-
-    if api_key and endpoint and deployment_name:
-        return ModelConfig(
-            name=model_name,
-            label=label,
-            api_key=api_key,
-            endpoint=endpoint,
-            deployment_name=deployment_name,
-            api_version=api_version,
-        )
+    label = os.getenv(f"{prefix}LABEL", "").strip()
 
     configured_values = {
         "API_KEY": api_key,
@@ -116,14 +223,17 @@ def _build_model_config(model_name: str) -> ModelConfig | None:
         "DEPLOYMENT": deployment_name,
         "API_VERSION": api_version,
     }
-    if any(value for value in configured_values.values()):
-        missing = [key for key, value in configured_values.items() if key != "API_VERSION" and not value]
-        logger.warning(
-            "Skipping model '%s': missing %s in env prefix %s",
-            model_name,
-            ", ".join(missing),
-            prefix,
+    if api_key and endpoint and deployment_name:
+        return ModelConfig(
+            model_id=model_id,
+            label=label or _default_model_label(model_id, MODEL_PROVIDER_AZURE),
+            provider=MODEL_PROVIDER_AZURE,
+            api_key=api_key,
+            endpoint=endpoint,
+            deployment_name=deployment_name,
+            api_version=api_version,
         )
+    _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "ENDPOINT", "DEPLOYMENT"])
     return None
 
 
@@ -150,8 +260,9 @@ def _load_legacy_model_configs() -> list[ModelConfig]:
             continue
         configs.append(
             ModelConfig(
-                name=model_name,
-                label=MODEL_LABEL_DEFAULTS.get(model_name, model_name),
+                model_id=model_name,
+                label=_default_model_label(model_name, MODEL_PROVIDER_AZURE),
+                provider=MODEL_PROVIDER_AZURE,
                 api_key=api_key,
                 endpoint=endpoint,
                 deployment_name=deployment_name,
@@ -162,17 +273,23 @@ def _load_legacy_model_configs() -> list[ModelConfig]:
 
 
 def _load_model_registry() -> tuple[dict[str, ModelConfig], str | None]:
-    configured_model_names = _parse_csv_env("AZURE_OPENAI_MODELS")
+    configured_model_names = _parse_csv_env("LLM_MODELS")
+    legacy_named_models = _parse_csv_env("AZURE_OPENAI_MODELS")
 
     registry: dict[str, ModelConfig] = {}
     if configured_model_names:
-        for model_name in configured_model_names:
-            config = _build_model_config(model_name)
+        for model_id in configured_model_names:
+            config = _build_model_config(model_id)
             if config is not None:
-                registry[model_name] = config
+                registry[model_id] = config
+    elif legacy_named_models:
+        for model_id in legacy_named_models:
+            config = _build_legacy_azure_model_config(model_id)
+            if config is not None:
+                registry[model_id] = config
     else:
         for config in _load_legacy_model_configs():
-            registry[config.name] = config
+            registry[config.model_id] = config
 
     default_model_name = os.getenv("DEFAULT_MODEL", "").strip()
     if default_model_name and default_model_name not in registry:
@@ -187,15 +304,35 @@ def _load_model_registry() -> tuple[dict[str, ModelConfig], str | None]:
 
 MODEL_REGISTRY, DEFAULT_MODEL_NAME = _load_model_registry()
 if not MODEL_REGISTRY:
-    logger.warning("No Azure OpenAI models are configured. Set AZURE_OPENAI_MODELS and model-specific env vars.")
+    logger.warning("No models are configured. Set LLM_MODELS and model-specific env vars, or use the legacy Azure fallback.")
+
+
+def _build_chat_client(config: ModelConfig):
+    if config.provider == MODEL_PROVIDER_AZURE:
+        return AzureOpenAIChatClient(
+            api_key=config.api_key,
+            endpoint=config.endpoint,
+            deployment_name=config.deployment_name,
+            api_version=config.api_version,
+        )
+
+    if config.provider == MODEL_PROVIDER_OPENAI:
+        kwargs = {
+            "api_key": config.api_key,
+            "model_id": config.provider_model_id,
+        }
+        if config.endpoint:
+            kwargs["base_url"] = config.endpoint
+        if config.org_id:
+            kwargs["org_id"] = config.org_id
+        return OpenAIChatClient(**kwargs)
+
+    raise ValueError(f"Unsupported provider: {config.provider}")
+
+
 MODEL_CLIENTS = {
-    model_name: AzureOpenAIChatClient(
-        api_key=config.api_key,
-        endpoint=config.endpoint,
-        deployment_name=config.deployment_name,
-        api_version=config.api_version,
-    )
-    for model_name, config in MODEL_REGISTRY.items()
+    model_id: _build_chat_client(config)
+    for model_id, config in MODEL_REGISTRY.items()
 }
 
 def get_chat_client_for_model(model_name: str = None):
@@ -209,7 +346,13 @@ def get_chat_client_for_model(model_name: str = None):
 
     config = MODEL_REGISTRY[resolved_model_name]
     logger.info(
-        get_text('log_model_selected', LANGUAGE, model=resolved_model_name, deployment=config.deployment_name)
+        get_text(
+            'log_model_selected',
+            LANGUAGE,
+            model=resolved_model_name,
+            provider=config.provider_label,
+            target=config.target_name,
+        )
     )
     return MODEL_CLIENTS[resolved_model_name]
 
@@ -227,9 +370,12 @@ def get_requested_model_name(body: dict) -> str | None:
 def get_model_metadata() -> list[dict[str, object]]:
     return [
         {
-            "id": config.name,
+            "id": config.model_id,
             "label": config.label,
-            "is_default": config.name == DEFAULT_MODEL_NAME,
+            "provider": config.provider,
+            "provider_label": config.provider_label,
+            "target": config.target_name,
+            "is_default": config.model_id == DEFAULT_MODEL_NAME,
         }
         for config in MODEL_REGISTRY.values()
     ]

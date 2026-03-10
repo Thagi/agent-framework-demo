@@ -11,7 +11,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Multi-agent analysis (ConcurrentBuilder)**: Run two agents in parallel (Critical / Positive), then a Synthesizer merges the results
 - **RAG search (Text streaming)**: Referenced responses using Azure AI Search (optional)
 - **AI board meeting (GroupChatBuilder)**: The CEO, CTO, CFO, and COO speak in turn, building on each other's points, with the COO compiling the implementation plan. (with `tone`)
-- **Model selection**: The frontend receives the available model list from the backend, so selectable models stay aligned with backend configuration
+- **Model selection**: The frontend receives the available model list and provider metadata from the backend, so selectable models stay aligned with backend configuration
 - **Conversation memory**: The Backend keeps per-session history with Agent Framework `AgentThread`, and the Frontend re-renders server-side message history on reload
 
 ### Multi-agent analysis (ConcurrentBuilder)
@@ -28,8 +28,8 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Backend**: FastAPI (port 8000)
     - Executes agents using Microsoft Agent Framework
     - Keeps per-session `AgentThread` state and uses it for follow-up answers
-    - Reads model-specific Azure OpenAI settings from `.env` and exposes the safe model list to the frontend
-    - Calls Azure OpenAI and streams the output back
+    - Reads provider-aware model settings from `.env`, then exposes the safe model list to the frontend
+    - Calls Azure OpenAI or OpenAI and streams the output back
 
 Main call path (example: regular chat):
 
@@ -37,7 +37,7 @@ Main call path (example: regular chat):
 Browser (Fetch streaming)
     -> Frontend: POST /api/chat/stream
         -> Backend: POST /api/stream
-            -> Azure OpenAI
+            -> Configured model provider (Azure OpenAI / OpenAI)
 ```
 
 ## Requirements
@@ -64,30 +64,47 @@ pip install -r .\Frontend\requirements.txt
 
 > `start.ps1` / `start.bat` run servers using the current Python environment. Activate your venv/conda environment before running them.
 
-### 2) Environment variables (Backend: Azure OpenAI)
+### 2) Environment variables (Backend: Azure OpenAI / OpenAI)
 
 The Backend loads `Backend/.env` at startup.
 Copy `Backend/.env.example` to `Backend/.env` and set the values (**do not commit secrets**).
 
 ```
-AZURE_OPENAI_MODELS=gpt-4.1-mini,gpt-4.1
-DEFAULT_MODEL=gpt-4.1-mini
+LLM_MODELS=azure-gpt-4-1-mini,openai-gpt-4-1-mini
+DEFAULT_MODEL=azure-gpt-4-1-mini
 
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_KEY=...
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
-AZURE_OPENAI_MODEL_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
+LLM_MODEL_AZURE_GPT_4_1_MINI_PROVIDER=azure
+LLM_MODEL_AZURE_GPT_4_1_MINI_LABEL=GPT-4.1 Mini (Azure OpenAI)
+LLM_MODEL_AZURE_GPT_4_1_MINI_API_KEY=...
+LLM_MODEL_AZURE_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
+LLM_MODEL_AZURE_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
+LLM_MODEL_AZURE_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
 
-AZURE_OPENAI_MODEL_GPT_4_1_API_KEY=...
-AZURE_OPENAI_MODEL_GPT_4_1_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_MODEL_GPT_4_1_API_VERSION=2024-12-01-preview
-AZURE_OPENAI_MODEL_GPT_4_1_DEPLOYMENT=<your-gpt-4-1-deployment>
+LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER=openai
+LLM_MODEL_OPENAI_GPT_4_1_MINI_LABEL=GPT-4.1 Mini (OpenAI)
+LLM_MODEL_OPENAI_GPT_4_1_MINI_API_KEY=...
+LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID=gpt-4.1-mini
+# Optional for OpenAI-compatible gateways:
+# LLM_MODEL_OPENAI_GPT_4_1_MINI_ENDPOINT=https://api.openai.com/v1
+# LLM_MODEL_OPENAI_GPT_4_1_MINI_ORG_ID=org_xxx
 ```
 
 Suffix rule for model-specific env vars:
 
-- `gpt-4.1-mini` -> `GPT_4_1_MINI`
-- `gpt-4.1` -> `GPT_4_1`
+- `azure-gpt-4-1-mini` -> `AZURE_GPT_4_1_MINI`
+- `openai-gpt-4-1-mini` -> `OPENAI_GPT_4_1_MINI`
+
+Per-model required fields:
+
+- `azure`: `PROVIDER`, `API_KEY`, `ENDPOINT`, `DEPLOYMENT`
+- `openai`: `PROVIDER`, `API_KEY`, `MODEL_ID`
+
+Notes:
+
+- `LLM_MODELS` defines the model aliases exposed to the frontend; use unique aliases if you want to expose both Azure and OpenAI variants of the same model family.
+- `DEFAULT_MODEL` must match one of the aliases in `LLM_MODELS`.
+- `ENDPOINT` is required for Azure and optional for OpenAI. For OpenAI, `ENDPOINT` is treated as the API base URL.
+- `API_VERSION` is used only for Azure-backed models.
 
 (Optional) If you use Azure AI Search (RAG search):
 
@@ -108,7 +125,7 @@ LANGUAGE=en
 
 Note: the Backend reads `LANGUAGE` at startup, so you need to restart the Backend to apply changes.
 
-(Optional) Legacy env format is still supported as a fallback for existing setups:
+(Optional) Legacy Azure-only env formats are still supported as fallbacks for existing setups:
 
 ```
 AZURE_OPENAI_API_KEY=...
@@ -213,10 +230,20 @@ Deployment is automated by scripts/deploy-aca.ps1.
 Set these in PowerShell before running (the script validates them **only when the Backend is created for the first time**).
 
 ```powershell
-$env:AZURE_OPENAI_API_KEY = "..."
-$env:AZURE_OPENAI_ENDPOINT = "https://<your-resource>.openai.azure.com/"
-$env:AZURE_OPENAI_DEPLOYMENT = "..."
+$env:LLM_MODELS = "azure-gpt-4-1-mini,openai-gpt-4-1-mini"
+$env:DEFAULT_MODEL = "azure-gpt-4-1-mini"
+
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_PROVIDER = "azure"
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_API_KEY = "..."
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_ENDPOINT = "https://<your-resource>.openai.azure.com/"
+$env:LLM_MODEL_AZURE_GPT_4_1_MINI_DEPLOYMENT = "..."
+
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER = "openai"
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_API_KEY = "..."
+$env:LLM_MODEL_OPENAI_GPT_4_1_MINI_MODEL_ID = "gpt-4.1-mini"
 ```
+
+The deployment script also accepts the legacy Azure-only `AZURE_OPENAI_*` environment variables as a fallback.
 
 (Optional) Azure AI Search:
 
