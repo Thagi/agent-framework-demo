@@ -11,7 +11,7 @@
 - **マルチエージェント分析（ConcurrentBuilder）**: 2エージェントを並列実行（Critical / Positive）し、最後にSynthesizerが統合
 - **RAG検索（Text streaming）**: Azure AI Search（任意）を使った参照（出典）付き応答
 - **AI役員会議（GroupChatBuilder）**: CEO/CTO/CFO/COO が前の人の意見を踏まえながら順番に発言し、COOが実行計画をまとめる（tone指定あり）
-- **モデル選択**: リクエストごとに `model` を指定（デプロイ名のマッピングは環境変数で上書き可能）
+- **モデル選択**: Frontend は Backend から利用可能モデル一覧を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`で会話履歴を保持し、Frontendもサーバーメモリ上の履歴を再描画
 
 
@@ -29,6 +29,7 @@
 - **Backend**: FastAPI（port 8000）
     - Microsoft Agent Frameworkを使ってエージェント実行
     - セッション単位で`AgentThread`を保持し、会話履歴を次の回答へ反映
+    - `.env` のモデル別 Azure OpenAI 設定を読み込み、安全なモデル一覧だけを Frontend に公開
     - Azure OpenAIを呼び出し、結果をストリーミング返却
 
 主要な呼び出し経路（例: 通常チャット）:
@@ -70,10 +71,24 @@ Backendは起動時に`Backend/.env`を読み込みます。
 `Backend/.env.example` を `Backend/.env` にコピーして値を設定してください（**秘密情報はコミットしない**）。
 
 ```
-AZURE_OPENAI_API_KEY=...
-AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=<your-deployment-name>
+AZURE_OPENAI_MODELS=gpt-4.1-mini,gpt-4.1
+DEFAULT_MODEL=gpt-4.1-mini
+
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_KEY=...
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
+
+AZURE_OPENAI_MODEL_GPT_4_1_API_KEY=...
+AZURE_OPENAI_MODEL_GPT_4_1_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_MODEL_GPT_4_1_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_MODEL_GPT_4_1_DEPLOYMENT=<your-gpt-4-1-deployment>
 ```
+
+モデル別 env のサフィックス変換ルール:
+
+- `gpt-4.1-mini` -> `GPT_4_1_MINI`
+- `gpt-4.1` -> `GPT_4_1`
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 
@@ -94,14 +109,13 @@ LANGUAGE=en
 
 ※Backendは起動時に`LANGUAGE`を読み込むため、変更後はBackendの再起動が必要です。
 
-（任意）モデル名 → デプロイ名のマッピング上書き:
+（任意）既存環境向けの旧形式 env もフォールバックとして引き続き利用できます:
 
 ```
-AZURE_OPENAI_DEPLOYMENT_GPT41=<deployment-for-gpt-4.1>
-AZURE_OPENAI_DEPLOYMENT_GPT41_MINI=<deployment-for-gpt-4.1-mini>
-AZURE_OPENAI_DEPLOYMENT_GPT41_NANO=<deployment-for-gpt-4.1-nano>
-AZURE_OPENAI_DEPLOYMENT_GPT52=<deployment-for-gpt-5.2>
-AZURE_OPENAI_DEPLOYMENT_GPT52_CHAT=<deployment-for-gpt-5.2-chat>
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_DEPLOYMENT=...
 ```
 
 ### 3) `podman-compose` で実行
@@ -181,7 +195,7 @@ python .\Frontend\app.py
 1. ブラウザで http://localhost:5000 を開く
 2. 入力欄にプロンプトを入れて送信
 3. ボタンでモードを切替（通常 / マルチ / RAG / 井戸端）
-4. `model`セレクターがある場合はモデルを選択（デフォルトは`gpt-4.1-mini`）
+4. `model`セレクターは Backend 設定から自動生成されるので、その中から利用するモデルを選択
 
 ## Azure Container Apps へデプロイ
 

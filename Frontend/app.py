@@ -102,6 +102,19 @@ def index():
     return render_template('index.html', language=language, enable_di_link=enable_di_link)
 
 
+@app.route('/api/models', methods=['GET'])
+def get_models():
+    """Proxy the backend model list so the browser stays same-origin."""
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(f"{app.config['BACKEND_URL']}/api/models")
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.error("Failed to fetch backend model list: %s", exc)
+        return jsonify({"default_model": None, "models": [], "error": str(exc)}), 502
+
+
 @app.route('/api/messages', methods=['GET'])
 def get_messages():
     """Get message history"""

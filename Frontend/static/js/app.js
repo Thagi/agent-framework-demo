@@ -5,6 +5,8 @@ let messages = [];
 let messagesGuideline = [];
 let messagesIdobata = [];
 let currentMode = 'general'; // 'general' or 'guideline' or 'idobata'
+let availableModels = [];
+let defaultModelId = null;
 const sessionId = 'default';
 const sessionIdGuideline = 'guideline';
 const sessionIdIdobata = 'idobata';
@@ -50,6 +52,80 @@ const settingsButtonIdobata = document.getElementById('settingsButtonIdobata');
 const inputAreaGeneral = document.querySelector('#generalChat .chat-input-area');
 const inputAreaGuideline = document.querySelector('#guidelineChat .chat-input-area');
 const inputAreaIdobata = document.querySelector('#idobataChat .chat-input-area');
+const modelSelects = [modelSelect, modelSelectGuideline, modelSelectIdobata];
+
+function setModelSelectPlaceholder(label) {
+    modelSelects.forEach(select => {
+        if (!select) return;
+        select.innerHTML = '';
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = label;
+        option.selected = true;
+        select.appendChild(option);
+        select.disabled = true;
+    });
+}
+
+function renderModelSelects() {
+    if (!Array.isArray(availableModels) || availableModels.length === 0) {
+        setModelSelectPlaceholder(t('models_unavailable'));
+        updateButtons();
+        updateButtonsGuideline();
+        updateButtonsIdobata();
+        return;
+    }
+
+    modelSelects.forEach(select => {
+        if (!select) return;
+        const previousValue = select.value;
+        select.innerHTML = '';
+
+        availableModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.id;
+            option.textContent = model.label || model.id;
+            if (previousValue && previousValue === model.id) {
+                option.selected = true;
+            }
+            select.appendChild(option);
+        });
+
+        select.disabled = false;
+        const selectedValue = previousValue && availableModels.some(model => model.id === previousValue)
+            ? previousValue
+            : (defaultModelId || availableModels[0].id);
+        select.value = selectedValue;
+    });
+
+    updateButtons();
+    updateButtonsGuideline();
+    updateButtonsIdobata();
+}
+
+async function loadAvailableModels() {
+    setModelSelectPlaceholder(t('models_loading'));
+
+    try {
+        const response = await fetch('/api/models');
+        const payload = await response.json();
+
+        if (!response.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+
+        availableModels = Array.isArray(payload.models) ? payload.models : [];
+        defaultModelId = payload.default_model || (availableModels[0] && availableModels[0].id) || null;
+    } catch (error) {
+        console.error('Model load error:', error);
+        availableModels = [];
+        defaultModelId = null;
+    }
+
+    renderModelSelects();
+}
+
+window.renderDynamicUi = renderModelSelects;
 
 function setStreamingUi(busy) {
     [inputAreaGeneral, inputAreaGuideline, inputAreaIdobata].forEach(area => {
@@ -175,18 +251,21 @@ function renderMarkdown(content) {
 
 function updateButtons() {
     const hasText = promptInput.value.trim().length > 0;
-    sendButton.disabled = isBusy || !hasText;
-    multiAgentButton.disabled = isBusy || !hasText;
+    const hasModel = modelSelect && !modelSelect.disabled && !!modelSelect.value;
+    sendButton.disabled = isBusy || !hasText || !hasModel;
+    multiAgentButton.disabled = isBusy || !hasText || !hasModel;
 }
 
 function updateButtonsGuideline() {
     const hasText = promptInputGuideline.value.trim().length > 0;
-    sendButtonGuideline.disabled = isBusy || !hasText;
+    const hasModel = modelSelectGuideline && !modelSelectGuideline.disabled && !!modelSelectGuideline.value;
+    sendButtonGuideline.disabled = isBusy || !hasText || !hasModel;
 }
 
 function updateButtonsIdobata() {
     const hasText = promptInputIdobata.value.trim().length > 0;
-    sendButtonIdobata.disabled = isBusy || !hasText;
+    const hasModel = modelSelectIdobata && !modelSelectIdobata.disabled && !!modelSelectIdobata.value;
+    sendButtonIdobata.disabled = isBusy || !hasText || !hasModel;
 }
 
 function handleKeyDown(event) {
@@ -309,6 +388,11 @@ async function initializeHistories() {
     await loadHistory(sessionId, messages, renderMessage, showWelcomeScreen, hideWelcomeScreen);
     await loadHistory(sessionIdGuideline, messagesGuideline, renderMessageGuideline, showWelcomeScreenGuideline, hideWelcomeScreenGuideline);
     await loadHistory(sessionIdIdobata, messagesIdobata, renderMessageIdobata, showWelcomeScreenIdobata, hideWelcomeScreenIdobata);
+}
+
+async function initializeApp() {
+    await loadAvailableModels();
+    await initializeHistories();
 }
 
 function hideWelcomeScreen() {
@@ -1210,4 +1294,4 @@ async function streamGuidelineChat(prompt, aiMessage) {
     }
 }
 
-void initializeHistories();
+void initializeApp();

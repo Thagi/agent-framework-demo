@@ -11,7 +11,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Multi-agent analysis (ConcurrentBuilder)**: Run two agents in parallel (Critical / Positive), then a Synthesizer merges the results
 - **RAG search (Text streaming)**: Referenced responses using Azure AI Search (optional)
 - **AI board meeting (GroupChatBuilder)**: The CEO, CTO, CFO, and COO speak in turn, building on each other's points, with the COO compiling the implementation plan. (with `tone`)
-- **Model selection**: Specify `model` per request (deployment mapping can be overridden via environment variables)
+- **Model selection**: The frontend receives the available model list from the backend, so selectable models stay aligned with backend configuration
 - **Conversation memory**: The Backend keeps per-session history with Agent Framework `AgentThread`, and the Frontend re-renders server-side message history on reload
 
 ### Multi-agent analysis (ConcurrentBuilder)
@@ -28,6 +28,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Backend**: FastAPI (port 8000)
     - Executes agents using Microsoft Agent Framework
     - Keeps per-session `AgentThread` state and uses it for follow-up answers
+    - Reads model-specific Azure OpenAI settings from `.env` and exposes the safe model list to the frontend
     - Calls Azure OpenAI and streams the output back
 
 Main call path (example: regular chat):
@@ -69,10 +70,24 @@ The Backend loads `Backend/.env` at startup.
 Copy `Backend/.env.example` to `Backend/.env` and set the values (**do not commit secrets**).
 
 ```
-AZURE_OPENAI_API_KEY=...
-AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=<your-deployment-name>
+AZURE_OPENAI_MODELS=gpt-4.1-mini,gpt-4.1
+DEFAULT_MODEL=gpt-4.1-mini
+
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_KEY=...
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_MODEL_GPT_4_1_MINI_DEPLOYMENT=<your-gpt-4-1-mini-deployment>
+
+AZURE_OPENAI_MODEL_GPT_4_1_API_KEY=...
+AZURE_OPENAI_MODEL_GPT_4_1_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_MODEL_GPT_4_1_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_MODEL_GPT_4_1_DEPLOYMENT=<your-gpt-4-1-deployment>
 ```
+
+Suffix rule for model-specific env vars:
+
+- `gpt-4.1-mini` -> `GPT_4_1_MINI`
+- `gpt-4.1` -> `GPT_4_1`
 
 (Optional) If you use Azure AI Search (RAG search):
 
@@ -93,14 +108,13 @@ LANGUAGE=en
 
 Note: the Backend reads `LANGUAGE` at startup, so you need to restart the Backend to apply changes.
 
-(Optional) Override model name → deployment name mapping:
+(Optional) Legacy env format is still supported as a fallback for existing setups:
 
 ```
-AZURE_OPENAI_DEPLOYMENT_GPT41=<deployment-for-gpt-4.1>
-AZURE_OPENAI_DEPLOYMENT_GPT41_MINI=<deployment-for-gpt-4.1-mini>
-AZURE_OPENAI_DEPLOYMENT_GPT41_NANO=<deployment-for-gpt-4.1-nano>
-AZURE_OPENAI_DEPLOYMENT_GPT52=<deployment-for-gpt-5.2>
-AZURE_OPENAI_DEPLOYMENT_GPT52_CHAT=<deployment-for-gpt-5.2-chat>
+AZURE_OPENAI_API_KEY=...
+AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com/
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_DEPLOYMENT=...
 ```
 
 ### 3) Run with `podman-compose`
@@ -180,7 +194,7 @@ python .\Frontend\app.py
 1. Open http://localhost:5000 in your browser
 2. Enter a prompt and send
 3. Switch modes via buttons (regular / multi / RAG / board meeting)
-4. If there is a `model` selector, choose the model (default is `gpt-4.1-mini`)
+4. The `model` selector is populated from backend configuration; choose one of the exposed models
 
 ## Deploy to Azure Container Apps
 

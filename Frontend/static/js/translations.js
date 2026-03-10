@@ -13,6 +13,8 @@ const translations = {
         'general_title': 'マルチエージェントチャットアシスタント',
         'general_subtitle': 'Powered by Microsoft Agent Framework',
         'model_label': 'モデル',
+        'models_loading': 'モデル読込中...',
+        'models_unavailable': '利用可能なモデルがありません',
         'settings': '設定',
         'clear_chat': 'チャットをクリア',
         'welcome': 'ようこそ！',
@@ -101,6 +103,8 @@ const translations = {
         'general_title': 'Multi-Agent Chat Assistant',
         'general_subtitle': 'Powered by Microsoft Agent Framework',
         'model_label': 'Model',
+        'models_loading': 'Loading models...',
+        'models_unavailable': 'No models available',
         'settings': 'Settings',
         'clear_chat': 'Clear Chat',
         'welcome': 'Welcome!',
@@ -225,6 +229,10 @@ function updateUI() {
             button.classList.remove('active');
         }
     });
+
+    if (typeof window.renderDynamicUi === 'function') {
+        window.renderDynamicUi();
+    }
 }
 
 // Run on page load

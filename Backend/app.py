@@ -1,6 +1,8 @@
 import os
+import re
 import time
 import logging
+from dataclasses import dataclass
 from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -46,20 +48,6 @@ app.add_middleware(
 # Language setting
 LANGUAGE = os.getenv("LANGUAGE", "ja")  # Default: Japanese
 
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-
-# Model name to Azure OpenAI deployment mapping
-# Read from environment variables or use defaults
-MODEL_DEPLOYMENT_MAP = {
-    "gpt-4.1": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT41", AZURE_OPENAI_DEPLOYMENT),
-    "gpt-4.1-mini": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT41_MINI", AZURE_OPENAI_DEPLOYMENT),
-    "gpt-4.1-nano": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT41_NANO", AZURE_OPENAI_DEPLOYMENT),
-    "gpt-5.2": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT52", AZURE_OPENAI_DEPLOYMENT),
-    "gpt-5.2-chat": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT52_CHAT", AZURE_OPENAI_DEPLOYMENT),
-}
-
 # Azure AI Search settings
 SEARCH_ENDPOINT = os.getenv("SEARCH_ENDPOINT")
 SEARCH_API_KEY = os.getenv("SEARCH_API_KEY")
@@ -73,37 +61,185 @@ MODE_IDOBATA = "idobata"
 
 session_store = SessionStore(max_messages=SESSION_HISTORY_MESSAGES)
 
-# Initialize Agent Framework Chat Client
-chat_client = None
+MODEL_LABEL_DEFAULTS = {
+    "gpt-4.1": "GPT-4.1",
+    "gpt-4.1-mini": "GPT-4.1 Mini",
+    "gpt-4.1-nano": "GPT-4.1 Nano",
+    "gpt-5.2": "GPT-5.2",
+    "gpt-5.2-chat": "GPT-5.2 Chat",
+}
 
-if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT:
-    chat_client = AzureOpenAIChatClient(
-        api_key=AZURE_OPENAI_API_KEY,
-        endpoint=AZURE_OPENAI_ENDPOINT,
-        deployment_name=AZURE_OPENAI_DEPLOYMENT,
+
+@dataclass(frozen=True)
+class ModelConfig:
+    name: str
+    label: str
+    api_key: str
+    endpoint: str
+    deployment_name: str
+    api_version: str | None = None
+
+
+def _parse_csv_env(name: str) -> list[str]:
+    raw_value = os.getenv(name, "")
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def _model_env_suffix(model_name: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", model_name).strip("_").upper()
+    return normalized or "DEFAULT"
+
+
+def _build_model_config(model_name: str) -> ModelConfig | None:
+    suffix = _model_env_suffix(model_name)
+    prefix = f"AZURE_OPENAI_MODEL_{suffix}_"
+
+    api_key = os.getenv(f"{prefix}API_KEY", "").strip()
+    endpoint = os.getenv(f"{prefix}ENDPOINT", "").strip()
+    deployment_name = os.getenv(f"{prefix}DEPLOYMENT", "").strip()
+    api_version = os.getenv(f"{prefix}API_VERSION", "").strip() or None
+    label = os.getenv(f"{prefix}LABEL", "").strip() or MODEL_LABEL_DEFAULTS.get(model_name, model_name)
+
+    if api_key and endpoint and deployment_name:
+        return ModelConfig(
+            name=model_name,
+            label=label,
+            api_key=api_key,
+            endpoint=endpoint,
+            deployment_name=deployment_name,
+            api_version=api_version,
+        )
+
+    configured_values = {
+        "API_KEY": api_key,
+        "ENDPOINT": endpoint,
+        "DEPLOYMENT": deployment_name,
+        "API_VERSION": api_version,
+    }
+    if any(value for value in configured_values.values()):
+        missing = [key for key, value in configured_values.items() if key != "API_VERSION" and not value]
+        logger.warning(
+            "Skipping model '%s': missing %s in env prefix %s",
+            model_name,
+            ", ".join(missing),
+            prefix,
+        )
+    return None
+
+
+def _load_legacy_model_configs() -> list[ModelConfig]:
+    api_key = os.getenv("AZURE_OPENAI_API_KEY", "").strip()
+    endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip()
+    api_version = os.getenv("AZURE_OPENAI_API_VERSION", "").strip() or None
+    default_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "").strip()
+
+    if not api_key or not endpoint:
+        return []
+
+    deployment_map = {
+        "gpt-4.1": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT41", "").strip() or default_deployment,
+        "gpt-4.1-mini": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT41_MINI", "").strip() or default_deployment,
+        "gpt-4.1-nano": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT41_NANO", "").strip() or default_deployment,
+        "gpt-5.2": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT52", "").strip() or default_deployment,
+        "gpt-5.2-chat": os.getenv("AZURE_OPENAI_DEPLOYMENT_GPT52_CHAT", "").strip() or default_deployment,
+    }
+
+    configs = []
+    for model_name, deployment_name in deployment_map.items():
+        if not deployment_name:
+            continue
+        configs.append(
+            ModelConfig(
+                name=model_name,
+                label=MODEL_LABEL_DEFAULTS.get(model_name, model_name),
+                api_key=api_key,
+                endpoint=endpoint,
+                deployment_name=deployment_name,
+                api_version=api_version,
+            )
+        )
+    return configs
+
+
+def _load_model_registry() -> tuple[dict[str, ModelConfig], str | None]:
+    configured_model_names = _parse_csv_env("AZURE_OPENAI_MODELS")
+
+    registry: dict[str, ModelConfig] = {}
+    if configured_model_names:
+        for model_name in configured_model_names:
+            config = _build_model_config(model_name)
+            if config is not None:
+                registry[model_name] = config
+    else:
+        for config in _load_legacy_model_configs():
+            registry[config.name] = config
+
+    default_model_name = os.getenv("DEFAULT_MODEL", "").strip()
+    if default_model_name and default_model_name not in registry:
+        logger.warning("DEFAULT_MODEL '%s' is not configured. Falling back to the first available model.", default_model_name)
+        default_model_name = ""
+
+    if not default_model_name and registry:
+        default_model_name = next(iter(registry))
+
+    return registry, default_model_name or None
+
+
+MODEL_REGISTRY, DEFAULT_MODEL_NAME = _load_model_registry()
+if not MODEL_REGISTRY:
+    logger.warning("No Azure OpenAI models are configured. Set AZURE_OPENAI_MODELS and model-specific env vars.")
+MODEL_CLIENTS = {
+    model_name: AzureOpenAIChatClient(
+        api_key=config.api_key,
+        endpoint=config.endpoint,
+        deployment_name=config.deployment_name,
+        api_version=config.api_version,
     )
+    for model_name, config in MODEL_REGISTRY.items()
+}
 
 def get_chat_client_for_model(model_name: str = None):
     """Return a chat client for the requested model."""
-    if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+    if not MODEL_CLIENTS:
         return None
-    
-    if not model_name or model_name not in MODEL_DEPLOYMENT_MAP:
-        # Use default chat_client
-        return chat_client
-    
-    deployment_name = MODEL_DEPLOYMENT_MAP.get(model_name, AZURE_OPENAI_DEPLOYMENT)
-    logger.info(get_text('log_model_selected', LANGUAGE, model=model_name, deployment=deployment_name))
-    
-    return AzureOpenAIChatClient(
-        api_key=AZURE_OPENAI_API_KEY,
-        endpoint=AZURE_OPENAI_ENDPOINT,
-        deployment_name=deployment_name,
+
+    resolved_model_name = model_name if model_name in MODEL_CLIENTS else DEFAULT_MODEL_NAME
+    if not resolved_model_name:
+        return None
+
+    config = MODEL_REGISTRY[resolved_model_name]
+    logger.info(
+        get_text('log_model_selected', LANGUAGE, model=resolved_model_name, deployment=config.deployment_name)
     )
+    return MODEL_CLIENTS[resolved_model_name]
+
+
+def get_requested_model_name(body: dict) -> str | None:
+    raw_model_name = body.get("model", "")
+    if raw_model_name is None:
+        return DEFAULT_MODEL_NAME
+    model_name = str(raw_model_name).strip()
+    if model_name:
+        return model_name
+    return DEFAULT_MODEL_NAME
+
+
+def get_model_metadata() -> list[dict[str, object]]:
+    return [
+        {
+            "id": config.name,
+            "label": config.label,
+            "is_default": config.name == DEFAULT_MODEL_NAME,
+        }
+        for config in MODEL_REGISTRY.values()
+    ]
 
 
 def get_session_id(body: dict, default: str = "default") -> str:
-    session_id = str(body.get("session_id", default)).strip()
+    raw_session_id = body.get("session_id", default)
+    if raw_session_id is None:
+        return default
+    session_id = str(raw_session_id).strip()
     return session_id or default
 
 
@@ -213,7 +349,7 @@ async def api_stream(request: Request):
     
     body = await request.json()
     prompt = body.get("prompt", "")
-    model_name = body.get("model", "gpt-4.1-mini")  # Default model
+    model_name = get_requested_model_name(body)
     session_id = get_session_id(body)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
@@ -272,7 +408,7 @@ async def api_guideline_stream(request: Request):
     
     body = await request.json()
     prompt = body.get("prompt", "")
-    model_name = body.get("model", "gpt-4.1-mini")  # Default model
+    model_name = get_requested_model_name(body)
     session_id = get_session_id(body, "guideline")
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
@@ -335,7 +471,7 @@ async def multi_agent_stream(request: Request):
     
     body = await request.json()
     prompt = body.get("prompt", "")
-    model_name = body.get("model", "gpt-4.1-mini")  # Default model
+    model_name = get_requested_model_name(body)
     session_id = get_session_id(body)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
@@ -496,7 +632,7 @@ async def phase1_planning_stream(request: Request):
 
     body = await request.json()
     prompt = body.get("prompt", "")
-    model_name = body.get("model", "gpt-4.1-mini")
+    model_name = get_requested_model_name(body)
     tone = body.get("tone", "balanced")
     session_id = get_session_id(body, "idobata")
 
@@ -725,6 +861,14 @@ async def phase1_planning_stream(request: Request):
             yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(generator(), media_type="text/plain")
+
+
+@app.get("/api/models")
+async def get_models():
+    return {
+        "default_model": DEFAULT_MODEL_NAME,
+        "models": get_model_metadata(),
+    }
 
 
 @app.post("/api/sessions/clear")
