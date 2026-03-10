@@ -475,7 +475,7 @@ def idobata_stream():
 
 
 if __name__ == '__main__':
-    port = int(os.getenv("PORT", "5000"))
+    port = int(os.getenv("PORT", "5001"))
     debug = os.getenv("FLASK_DEBUG", "0").lower() in ("1", "true", "yes", "on")
     host = os.getenv("HOST", "0.0.0.0")
     app.run(debug=debug, host=host, port=port, threaded=True)

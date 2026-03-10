@@ -18,14 +18,14 @@ $backendJob = Start-Job -ScriptBlock {
 $frontendJob = Start-Job -ScriptBlock {
     param($rootDir)
     Set-Location "$rootDir\Frontend"
-    Write-Host "Starting Frontend on http://localhost:5000" -ForegroundColor Cyan
+    Write-Host "Starting Frontend on http://localhost:5001" -ForegroundColor Cyan
     python app.py
 } -ArgumentList $rootDir
 
 Write-Host ""
 Write-Host "================================" -ForegroundColor Yellow
 Write-Host "Backend:  http://localhost:8000" -ForegroundColor Cyan
-Write-Host "Frontend: http://localhost:5000" -ForegroundColor Cyan
+Write-Host "Frontend: http://localhost:5001" -ForegroundColor Cyan
 Write-Host "================================" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Press Ctrl+C to stop both servers..." -ForegroundColor Yellow

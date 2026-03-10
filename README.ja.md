@@ -23,7 +23,7 @@
 
 ## アーキテクチャ概要
 
-- **Frontend**: Flask（port 5000）
+- **Frontend**: Flask（port 5001）
     - ブラウザへHTML/JSを配信
     - ブラウザからのリクエストを受け、Backendにストリーミングで中継（プロキシ）
 - **Backend**: FastAPI（port 8000）
@@ -156,13 +156,15 @@ AZURE_OPENAI_DEPLOYMENT=...
 
 `Backend/.env.example` を `Backend/.env` に、`Frontend/.env.example` を `Frontend/.env` にコピーして値を設定した後、リポジトリ直下で実行します。
 
+補足: サービスの listen port は `Backend/.env` / `Frontend/.env` では管理せず、公開する host port は `podman-compose.yml` を唯一の設定元にしています。
+
 ```bash
 podman-compose -f podman-compose.yml up --build
 ```
 
 起動後:
 
-- Frontend: http://localhost:5000
+- Frontend: http://localhost:5001
 - Backend: http://localhost:8000
 
 停止:
@@ -193,7 +195,7 @@ python app.py
 
 起動後:
 
-- Frontend: http://localhost:5000
+- Frontend: http://localhost:5001
 - Backend: http://localhost:8000
 
 #### B. 同時起動スクリプト
@@ -226,7 +228,7 @@ python .\Frontend\app.py
 
 ## 使い方（UI）
 
-1. ブラウザで http://localhost:5000 を開く
+1. ブラウザで http://localhost:5001 を開く
 2. 入力欄にプロンプトを入れて送信
 3. ボタンでモードを切替（通常 / マルチ / RAG / 井戸端）
 4. `model`セレクターは Backend 設定から自動生成されるので、その中から利用するモデルを選択
@@ -294,7 +296,7 @@ pwsh .\scripts\deploy-aca.ps1 -SubscriptionId <your-subscription-id> -ResourceGr
 - Container Apps Environment
 - Container Apps
     - Backend: ingress internal / port 8000
-    - Frontend: ingress external / port 5000（`BACKEND_URL=http://concurrent-streaming-backend` を設定）
+    - Frontend: ingress external / port 5001（`BACKEND_URL=http://concurrent-streaming-backend` を設定）
 
 完了するとFrontendのURL（`https://<fqdn>`）が出力されます。
 

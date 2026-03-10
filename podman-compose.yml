@@ -8,9 +8,6 @@ services:
     image: agent-framework-demo-backend:local
     env_file:
       - ./Backend/.env
-    environment:
-      HOST: 0.0.0.0
-      PORT: 8000
     ports:
       - "8000:8000"
     restart: unless-stopped
@@ -24,10 +21,8 @@ services:
       - ./Frontend/.env
     environment:
       BACKEND_URL: http://backend:8000
-      HOST: 0.0.0.0
-      PORT: 5000
     depends_on:
       - backend
     ports:
-      - "5000:5000"
+      - "5001:5001"
     restart: unless-stopped

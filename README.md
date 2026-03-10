@@ -22,7 +22,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 
 ## Architecture Overview
 
-- **Frontend**: Flask (port 5000)
+- **Frontend**: Flask (port 5001)
     - Serves HTML/JS to the browser
     - Receives browser requests and proxies them to the Backend with streaming
 - **Backend**: FastAPI (port 8000)
@@ -155,13 +155,15 @@ AZURE_OPENAI_DEPLOYMENT=...
 
 Copy `Backend/.env.example` to `Backend/.env` and `Frontend/.env.example` to `Frontend/.env`, then run from the repository root:
 
+Note: service listen ports are no longer configured in `Backend/.env` / `Frontend/.env`. `podman-compose.yml` is the single source of truth for published host ports.
+
 ```bash
 podman-compose -f podman-compose.yml up --build
 ```
 
 After startup:
 
-- Frontend: http://localhost:5000
+- Frontend: http://localhost:5001
 - Backend: http://localhost:8000
 
 Stop:
@@ -192,7 +194,7 @@ python app.py
 
 After startup:
 
-- Frontend: http://localhost:5000
+- Frontend: http://localhost:5001
 - Backend: http://localhost:8000
 
 #### B. Combined start scripts
@@ -225,7 +227,7 @@ python .\Frontend\app.py
 
 ## How to use (UI)
 
-1. Open http://localhost:5000 in your browser
+1. Open http://localhost:5001 in your browser
 2. Enter a prompt and send
 3. Switch modes via buttons (regular / multi / RAG / board meeting)
 4. The `model` selector is populated from backend configuration; choose one of the exposed models
@@ -293,7 +295,7 @@ What gets created/updated (high level):
 - Container Apps Environment
 - Container Apps
     - Backend: ingress internal / port 8000
-    - Frontend: ingress external / port 5000 (sets `BACKEND_URL=http://concurrent-streaming-backend`)
+    - Frontend: ingress external / port 5001 (sets `BACKEND_URL=http://concurrent-streaming-backend`)
 
 After completion, it prints the Frontend URL (`https://<fqdn>`).
 

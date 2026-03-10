@@ -5,7 +5,7 @@
 .DESCRIPTION
   Builds and deploys Backend and Frontend container apps to ACA.
   - Backend: Python FastAPI running on port 8000
-  - Frontend: Python Flask running on port 5000
+  - Frontend: Python Flask running on port 5001
 .PARAMETER ResourceGroup
   Azure resource group name (default: concurrent-streaming-demo-rg)
 .PARAMETER Location
@@ -291,7 +291,6 @@ function Get-BackendDeploymentConfig {
   Add-PlainEnvVar -EnvVars $envVars -Name "LANGUAGE"
   Add-PlainEnvVar -EnvVars $envVars -Name "SESSION_HISTORY_MESSAGES"
   Add-PlainEnvVar -EnvVars $envVars -Name "PROMPT_HISTORY_MESSAGES"
-  $envVars.Add("PORT=8000")
 
   return [PSCustomObject]@{
     HasModelConfig = $hasModelConfig
@@ -447,11 +446,19 @@ if (-not $FrontendOnly) {
           --secrets $backendConfig.Secrets 2>$null | Out-Null
       }
 
-      az containerapp update `
-        -g $ResourceGroup `
-        -n $BackendAppName `
-        --image $backendImage `
-        --set-env-vars $backendConfig.EnvVars 2>$null | Out-Null
+      if ($backendConfig.EnvVars.Count -gt 0) {
+        az containerapp update `
+          -g $ResourceGroup `
+          -n $BackendAppName `
+          --image $backendImage `
+          --set-env-vars $backendConfig.EnvVars 2>$null | Out-Null
+      }
+      else {
+        az containerapp update `
+          -g $ResourceGroup `
+          -n $BackendAppName `
+          --image $backendImage 2>$null | Out-Null
+      }
     }
     Write-Host "  Updated to image: $backendImage" -ForegroundColor Gray
   }
@@ -495,7 +502,7 @@ if ($frontendExists) {
       -g $ResourceGroup `
       -n $FrontendAppName `
       --image $frontendImage `
-      --set-env-vars PORT=5000 2>$null | Out-Null
+      --target-port 5001 2>$null | Out-Null
   }
   Write-Host "  Updated to image: $frontendImage" -ForegroundColor Gray
 }
@@ -503,8 +510,7 @@ else {
   Write-Step "Creating new Frontend: $FrontendAppName"
   
   $envVars = @(
-    "BACKEND_URL=http://$BackendAppName",
-    "PORT=5000"
+    "BACKEND_URL=http://$BackendAppName"
   )
 
   Suppress-AzWarnings {
@@ -514,7 +520,7 @@ else {
       --environment $AcaEnvName `
       --image $frontendImage `
       --ingress external `
-      --target-port 5000 `
+      --target-port 5001 `
       --registry-server $acrLoginServer `
       --registry-username $acrUsername `
       --registry-password $acrPassword `

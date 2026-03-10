@@ -22,7 +22,7 @@ $frontendJob = Start-Job -ScriptBlock {
 Write-Host "" 
 Write-Host "================================" -ForegroundColor Yellow
 Write-Host "Backend:  http://localhost:8000" -ForegroundColor Cyan
-Write-Host "Frontend: http://localhost:5000" -ForegroundColor Cyan
+Write-Host "Frontend: http://localhost:5001" -ForegroundColor Cyan
 Write-Host "================================" -ForegroundColor Yellow
 Write-Host "" 
 Write-Host "DEVモード: コード編集後は自動で再読み込みされます。" -ForegroundColor Yellow

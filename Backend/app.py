@@ -38,6 +38,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5000",   # Flask / .NET
+        "http://localhost:5001",   # Flask
         "https://localhost:5001",  # .NET (HTTPS)
         "http://localhost:8501",   # Streamlit
     ],
