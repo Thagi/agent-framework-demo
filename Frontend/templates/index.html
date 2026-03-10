@@ -244,6 +244,34 @@
         </div>
     </div>
 
+    <div class="approval-dialog-backdrop" id="approvalDialog" hidden>
+        <div class="approval-dialog" role="dialog" aria-modal="true" aria-labelledby="approvalTitle">
+            <div class="approval-dialog-header">
+                <h2 id="approvalTitle" data-i18n="approval_title">承認が必要です</h2>
+                <p id="approvalMessage" data-i18n="approval_message">この操作を実行する前に内容を確認してください。</p>
+            </div>
+            <div class="approval-dialog-body">
+                <div class="approval-meta-row">
+                    <span class="approval-meta-label" data-i18n="approval_mode">操作</span>
+                    <span class="approval-meta-value" id="approvalModeValue">-</span>
+                </div>
+                <div class="approval-meta-row">
+                    <span class="approval-meta-label" data-i18n="approval_model">モデル</span>
+                    <span class="approval-meta-value" id="approvalModelValue">-</span>
+                </div>
+                <div class="approval-meta-group">
+                    <div class="approval-meta-label" data-i18n="approval_reasons">承認理由</div>
+                    <ul class="approval-reason-list" id="approvalReasons"></ul>
+                </div>
+            </div>
+            <div class="approval-dialog-actions">
+                <button class="approval-button approval-button-secondary" id="approvalRejectButton" type="button" data-i18n="approval_button_reject">却下</button>
+                <button class="approval-button approval-button-secondary" id="approvalReviseButton" type="button" data-i18n="approval_button_revise">内容を修正</button>
+                <button class="approval-button approval-button-primary" id="approvalApproveButton" type="button" data-i18n="approval_button_approve">承認して実行</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="{{ url_for('static', filename='js/translations.js') }}"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>

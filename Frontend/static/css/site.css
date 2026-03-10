@@ -879,6 +879,121 @@ body.guideline-mode .chat-header {
     margin-top: 0.25rem;
 }
 
+.approval-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(8px);
+    z-index: 1000;
+}
+
+.approval-dialog {
+    width: min(100%, 560px);
+    background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+    border: 1px solid rgba(148, 163, 184, 0.32);
+    border-radius: 18px;
+    box-shadow: 0 28px 60px rgba(15, 23, 42, 0.24);
+    padding: 1.4rem;
+}
+
+.approval-dialog-header h2 {
+    margin: 0;
+    font-size: 1.15rem;
+    color: #0f172a;
+}
+
+.approval-dialog-header p {
+    margin: 0.45rem 0 0;
+    font-size: 0.94rem;
+    color: #475569;
+    line-height: 1.5;
+}
+
+.approval-dialog-body {
+    margin-top: 1rem;
+}
+
+.approval-meta-row,
+.approval-meta-group {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    border-radius: 12px;
+    padding: 0.85rem 0.95rem;
+}
+
+.approval-meta-row + .approval-meta-row,
+.approval-meta-row + .approval-meta-group,
+.approval-meta-group + .approval-meta-group {
+    margin-top: 0.65rem;
+}
+
+.approval-meta-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.approval-meta-label {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #475569;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.approval-meta-value {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #0f172a;
+    text-align: right;
+}
+
+.approval-reason-list {
+    margin: 0.55rem 0 0;
+    padding-left: 1.1rem;
+    color: #1e293b;
+    line-height: 1.55;
+}
+
+.approval-dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1.15rem;
+}
+
+.approval-button {
+    min-width: 8.5rem;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    padding: 0.72rem 1rem;
+    font-size: 0.92rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.approval-button:hover {
+    transform: translateY(-1px);
+}
+
+.approval-button-secondary {
+    background: #fff;
+    border-color: rgba(148, 163, 184, 0.4);
+    color: #334155;
+}
+
+.approval-button-primary {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+    box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
+    color: #fff;
+}
+
 .agents-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -1042,6 +1157,27 @@ body.guideline-mode .chat-header {
     /* 井戸端会議モードもレスポンシブで1カラムに */
     .planning-grid {
         grid-template-columns: 1fr;
+    }
+
+    .approval-dialog {
+        padding: 1.1rem;
+    }
+
+    .approval-dialog-actions {
+        flex-direction: column-reverse;
+    }
+
+    .approval-button {
+        width: 100%;
+    }
+
+    .approval-meta-row {
+        flex-direction: column;
+        gap: 0.35rem;
+    }
+
+    .approval-meta-value {
+        text-align: left;
     }
 }
 

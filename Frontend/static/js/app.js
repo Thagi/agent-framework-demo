@@ -53,6 +53,14 @@ const inputAreaGeneral = document.querySelector('#generalChat .chat-input-area')
 const inputAreaGuideline = document.querySelector('#guidelineChat .chat-input-area');
 const inputAreaIdobata = document.querySelector('#idobataChat .chat-input-area');
 const modelSelects = [modelSelect, modelSelectGuideline, modelSelectIdobata];
+const approvalDialog = document.getElementById('approvalDialog');
+const approvalModeValue = document.getElementById('approvalModeValue');
+const approvalModelValue = document.getElementById('approvalModelValue');
+const approvalReasons = document.getElementById('approvalReasons');
+const approvalApproveButton = document.getElementById('approvalApproveButton');
+const approvalRejectButton = document.getElementById('approvalRejectButton');
+const approvalReviseButton = document.getElementById('approvalReviseButton');
+let approvalResolver = null;
 
 function setModelSelectPlaceholder(label) {
     modelSelects.forEach(select => {
@@ -65,6 +73,18 @@ function setModelSelectPlaceholder(label) {
         select.appendChild(option);
         select.disabled = true;
     });
+}
+
+function tf(key, values = {}) {
+    let template = t(key);
+    Object.entries(values).forEach(([name, value]) => {
+        template = template.replaceAll(`{${name}}`, String(value));
+    });
+    return template;
+}
+
+function findModelDefinition(modelId) {
+    return availableModels.find(model => model.id === modelId) || null;
 }
 
 function renderModelSelects() {
@@ -219,6 +239,28 @@ promptInputIdobata.addEventListener('keydown', handleKeyDownIdobata);
 sendButtonIdobata.addEventListener('click', startIdobataChat);
 clearButtonIdobata.addEventListener('click', clearIdobataChat);
 
+if (approvalApproveButton) {
+    approvalApproveButton.addEventListener('click', () => closeApprovalDialog('approve'));
+}
+if (approvalRejectButton) {
+    approvalRejectButton.addEventListener('click', () => closeApprovalDialog('reject'));
+}
+if (approvalReviseButton) {
+    approvalReviseButton.addEventListener('click', () => closeApprovalDialog('revise'));
+}
+if (approvalDialog) {
+    approvalDialog.addEventListener('click', event => {
+        if (event.target === approvalDialog) {
+            closeApprovalDialog('reject');
+        }
+    });
+}
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && approvalResolver) {
+        closeApprovalDialog('reject');
+    }
+});
+
 // Settings button listeners
 if (settingsButtonGeneral) {
     settingsButtonGeneral.addEventListener('click', () => toggleSettings('generalChat'));
@@ -316,6 +358,88 @@ function setPromptIdobata(text) {
     promptInputIdobata.value = text;
     promptInputIdobata.focus();
     updateButtonsIdobata();
+}
+
+function closeApprovalDialog(decision) {
+    if (approvalDialog) {
+        approvalDialog.hidden = true;
+    }
+
+    const resolver = approvalResolver;
+    approvalResolver = null;
+    if (resolver) {
+        resolver(decision);
+    }
+}
+
+function getApprovalModeLabel(mode) {
+    if (mode === 'multi_agent') return t('multi_agent_button');
+    if (mode === 'guideline') return t('mode_guideline');
+    if (mode === 'idobata') return t('idobata_title');
+    return t('mode_general');
+}
+
+function buildApprovalRequest(mode, modelId) {
+    const model = findModelDefinition(modelId);
+    const reasons = [];
+
+    if (mode === 'multi_agent') {
+        reasons.push(t('approval_reason_multi_agent'));
+    }
+    if (mode === 'idobata') {
+        reasons.push(t('approval_reason_idobata'));
+    }
+    if (model && model.approval_required) {
+        reasons.push(model.approval_reason || tf('approval_reason_model_default', { model: model.label || model.id }));
+    }
+
+    return {
+        modeLabel: getApprovalModeLabel(mode),
+        modelLabel: (model && (model.label || model.id)) || modelId || '-',
+        reasons
+    };
+}
+
+function requestApproval(details) {
+    if (!approvalDialog) {
+        return Promise.resolve('approve');
+    }
+
+    approvalModeValue.textContent = details.modeLabel || '-';
+    approvalModelValue.textContent = details.modelLabel || '-';
+    approvalReasons.innerHTML = '';
+
+    details.reasons.forEach(reason => {
+        const li = document.createElement('li');
+        li.textContent = reason;
+        approvalReasons.appendChild(li);
+    });
+
+    approvalDialog.hidden = false;
+
+    return new Promise(resolve => {
+        approvalResolver = resolve;
+    });
+}
+
+async function ensureApprovalBeforeRun(mode, modelId, inputElement) {
+    const approvalRequest = buildApprovalRequest(mode, modelId);
+    if (!approvalRequest.reasons.length) {
+        return true;
+    }
+
+    const decision = await requestApproval(approvalRequest);
+    if (decision === 'approve') {
+        return true;
+    }
+
+    if (decision === 'revise' && inputElement) {
+        inputElement.focus();
+        const contentLength = inputElement.value.length;
+        inputElement.setSelectionRange(contentLength, contentLength);
+    }
+
+    return false;
 }
 
 function isPcFullWidth() {
@@ -1042,6 +1166,14 @@ function setStatus(busy, multiAgent = false) {
 async function startChat(multiAgent = false) {
     const prompt = promptInput.value.trim();
     if (!prompt || isBusy) return;
+
+    const selectedModel = modelSelect.value;
+    const approved = await ensureApprovalBeforeRun(
+        multiAgent ? 'multi_agent' : 'general',
+        selectedModel,
+        promptInput
+    );
+    if (!approved) return;
     
     promptInput.value = '';
     updateButtons();
@@ -1184,6 +1316,10 @@ async function streamMultiAgentChat(prompt, aiMessage) {
 async function startIdobataChat() {
     const prompt = promptInputIdobata.value.trim();
     if (!prompt || isBusy) return;
+
+    const selectedModel = modelSelectIdobata.value;
+    const approved = await ensureApprovalBeforeRun('idobata', selectedModel, promptInputIdobata);
+    if (!approved) return;
 
     promptInputIdobata.value = '';
     updateButtonsIdobata();
@@ -1330,6 +1466,10 @@ function hideWelcomeScreenGuideline() {
 async function startGuidelineChat() {
     const prompt = promptInputGuideline.value.trim();
     if (!prompt || isBusy) return;
+
+    const selectedModel = modelSelectGuideline.value;
+    const approved = await ensureApprovalBeforeRun('guideline', selectedModel, promptInputGuideline);
+    if (!approved) return;
     
     promptInputGuideline.value = '';
     updateButtonsGuideline();

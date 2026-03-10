@@ -94,6 +94,8 @@ LLM_MODEL_OPENAI_GPT_4_1_MODEL_ID=gpt-4-1
 LLM_MODEL_OPENAI_GPT_5_MINI_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_5_MINI_API_KEY=...
 LLM_MODEL_OPENAI_GPT_5_MINI_MODEL_ID=gpt-5-mini
+# LLM_MODEL_OPENAI_GPT_5_MINI_REQUIRES_APPROVAL=true
+# LLM_MODEL_OPENAI_GPT_5_MINI_APPROVAL_REASON=User approval is required for this higher-cost model
 
 LLM_MODEL_OPENAI_GPT_5_NANO_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_5_NANO_API_KEY=...
@@ -126,6 +128,8 @@ Notes:
 - `DEFAULT_MODEL` must match one of the aliases in `LLM_MODELS`.
 - `ENDPOINT` is required for Azure and optional for OpenAI. For OpenAI, `ENDPOINT` is treated as the API base URL.
 - `API_VERSION` is used only for Azure-backed models.
+- `REQUIRES_APPROVAL=true` makes the frontend show an approval dialog before that model is used.
+- `APPROVAL_REASON` is shown as-is in the approval dialog.
 - With aliases such as `openai-gpt-5-mini`, the env prefix becomes `LLM_MODEL_OPENAI_GPT_5_MINI_*`.
 
 (Optional) If you use Azure AI Search (RAG search):

@@ -98,6 +98,8 @@ class ModelConfig:
     api_version: str | None = None
     provider_model_id: str | None = None
     org_id: str | None = None
+    approval_required: bool = False
+    approval_reason: str | None = None
 
     @property
     def provider_label(self) -> str:
@@ -111,6 +113,13 @@ class ModelConfig:
 def _parse_csv_env(name: str) -> list[str]:
     raw_value = os.getenv(name, "")
     return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def _parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _model_env_suffix(model_name: str) -> str:
@@ -188,6 +197,8 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
     provider_model_id = os.getenv(f"{prefix}MODEL_ID", "").strip() or None
     org_id = os.getenv(f"{prefix}ORG_ID", "").strip() or None
     label = os.getenv(f"{prefix}LABEL", "").strip()
+    approval_required = _parse_bool_env(f"{prefix}REQUIRES_APPROVAL", False)
+    approval_reason = os.getenv(f"{prefix}APPROVAL_REASON", "").strip() or None
 
     if provider == MODEL_PROVIDER_AZURE:
         configured_values = {
@@ -206,6 +217,8 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 endpoint=endpoint,
                 deployment_name=deployment_name,
                 api_version=api_version,
+                approval_required=approval_required,
+                approval_reason=approval_reason,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "ENDPOINT", "DEPLOYMENT"])
         return None
@@ -228,6 +241,8 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 endpoint=resolved_endpoint,
                 provider_model_id=provider_model_id,
                 org_id=org_id,
+                approval_required=approval_required,
+                approval_reason=approval_reason,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "MODEL_ID"])
         return None
@@ -420,6 +435,8 @@ def get_model_metadata() -> list[dict[str, object]]:
             "provider_label": config.provider_label,
             "target": config.target_name,
             "is_default": config.model_id == DEFAULT_MODEL_NAME,
+            "approval_required": config.approval_required,
+            "approval_reason": config.approval_reason,
         }
         for config in MODEL_REGISTRY.values()
     ]

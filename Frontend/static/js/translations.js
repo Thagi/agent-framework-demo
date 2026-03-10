@@ -62,6 +62,17 @@ const translations = {
 
         // Dialog
         'confirm_clear_chat': 'チャット履歴をクリアしますか？',
+        'approval_title': '承認が必要です',
+        'approval_message': 'この操作を実行する前に内容を確認してください。',
+        'approval_mode': '操作',
+        'approval_model': 'モデル',
+        'approval_reasons': '承認理由',
+        'approval_button_reject': '却下',
+        'approval_button_revise': '内容を修正',
+        'approval_button_approve': '承認して実行',
+        'approval_reason_multi_agent': '並列エージェント分析を開始します。',
+        'approval_reason_idobata': '複数役員による会議ワークフローを開始します。',
+        'approval_reason_model_default': '{model} は承認対象として設定されています。',
 
         // Common strings
         'error_prefix': '❌ エラー: ',
@@ -157,6 +168,17 @@ const translations = {
 
         // Dialog
         'confirm_clear_chat': 'Clear chat history?',
+        'approval_title': 'Approval Required',
+        'approval_message': 'Review this action before it is executed.',
+        'approval_mode': 'Action',
+        'approval_model': 'Model',
+        'approval_reasons': 'Approval reasons',
+        'approval_button_reject': 'Reject',
+        'approval_button_revise': 'Revise',
+        'approval_button_approve': 'Approve and Run',
+        'approval_reason_multi_agent': 'This will start a parallel multi-agent analysis workflow.',
+        'approval_reason_idobata': 'This will start a multi-role board discussion workflow.',
+        'approval_reason_model_default': '{model} is configured as an approval-gated model.',
 
         // Common strings
         'error_prefix': '❌ Error: ',

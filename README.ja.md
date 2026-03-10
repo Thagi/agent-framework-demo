@@ -16,6 +16,7 @@
 - **RAG検索（Text streaming）**: Azure AI Search（任意）を使った参照（出典）付き応答
 - **AI役員会議（GroupChatBuilder）**: CEO/CTO/CFO/COO が前の人の意見を踏まえながら順番に発言し、COOが実行計画をまとめる（tone指定あり）
 - **計画可視化**: 各モードで回答前の goal / steps / tools / completion criteria を表示
+- **承認フロー**: マルチエージェント分析 / AI役員会議 / 承認対象モデルの実行前に `approve / reject / revise` を要求
 - **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`で会話履歴を保持し、Frontendもサーバーメモリ上の履歴を再描画
 
@@ -95,6 +96,8 @@ LLM_MODEL_OPENAI_GPT_4_1_MODEL_ID=gpt-4-1
 LLM_MODEL_OPENAI_GPT_5_MINI_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_5_MINI_API_KEY=...
 LLM_MODEL_OPENAI_GPT_5_MINI_MODEL_ID=gpt-5-mini
+# LLM_MODEL_OPENAI_GPT_5_MINI_REQUIRES_APPROVAL=true
+# LLM_MODEL_OPENAI_GPT_5_MINI_APPROVAL_REASON=高コストモデルのためユーザー承認が必要
 
 LLM_MODEL_OPENAI_GPT_5_NANO_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_5_NANO_API_KEY=...
@@ -127,6 +130,8 @@ provider ごとの必須項目:
 - `DEFAULT_MODEL` は `LLM_MODELS` に含まれる別名を指定してください。
 - `ENDPOINT` は Azure では必須、OpenAI では任意です。OpenAI では API の base URL として扱います。
 - `API_VERSION` は Azure モデルでのみ利用します。
+- `REQUIRES_APPROVAL=true` を付けると、そのモデル選択時に Frontend で承認ダイアログを表示します。
+- `APPROVAL_REASON` を設定すると、承認ダイアログへ理由をそのまま表示します。
 - `openai-gpt-5-mini` のような別名を使う場合、env の接頭辞は `LLM_MODEL_OPENAI_GPT_5_MINI_*` になります。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
