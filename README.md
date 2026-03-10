@@ -5,6 +5,10 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 
 > 日本語版: [README.ja.md](README.ja.md)
 
+## Related Docs
+
+- [Agent demo expansion ideas](docs/agent-demo-expansion.md)
+
 ## Feature Overview (What you can do in this repo)
 
 - **Regular chat (Text streaming)**: Display a single agent’s output token/chunk by token/chunk

@@ -5,6 +5,10 @@
 
 > English version: [README.md](README.md)
 
+## 関連ドキュメント
+
+- [Agent機能デモの拡張案](docs/agent-demo-expansion.ja.md)
+
 ## 機能紹介（このリポジトリでできること）
 
 - **通常チャット（Text streaming）**: 1エージェントの出力をトークン/チャンク単位で表示
