@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="ja" data-lang="{{ language }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title data-i18n="app_title">Agent Streaming Chat</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/site.css') }}">
+</head>
+<body>
+    <!-- 最上位ナビメニュー（Language Switcher） -->
+    <nav class="top-nav" aria-label="Language Switcher">
+        {% if enable_di_link %}
+        <a class="top-nav-link" href="https://ca-documentintelligence.ambitiousriver-a2c07a6d.japaneast.azurecontainerapps.io" target="_blank" rel="noopener noreferrer" data-i18n="doc_intelligence">Document Intelligence</a>
+        {% endif %}
+        <div class="language-switcher">
+            <button class="lang-button" onclick="setLanguage('ja')" data-lang="ja">🇯🇵 日本語</button>
+            <button class="lang-button" onclick="setLanguage('en')" data-lang="en">🇺🇸 English</button>
+        </div>
+    </nav>
+
+    <!-- モード切替メニュー -->
+    <nav class="mode-selector">
+        <div class="mode-tabs">
+            <button class="mode-tab active" data-mode="general" onclick="switchMode('general')">
+                <span class="mode-icon">🤖</span>
+                <span data-i18n="mode_general">通常チャット</span>
+            </button>
+            <button class="mode-tab" data-mode="guideline" onclick="switchMode('guideline')">
+                <span class="mode-icon">📊</span>
+                <span data-i18n="mode_guideline">RAG検索</span>
+            </button>
+            <button class="mode-tab" data-mode="idobata" onclick="switchMode('idobata')">
+                <span class="mode-icon">🗣️</span>
+                <span data-i18n="mode_idobata">AI役員会議</span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- 通常チャットモード -->
+    <div class="chat-container" id="generalChat">
+        <div class="chat-header">
+            <div class="header-content">
+                <div class="header-icon">🤖</div>
+                <div class="header-text">
+                    <h1 data-i18n="general_title">マルチエージェントチャットアシスタント</h1>
+                    <p class="header-subtitle" data-i18n="general_subtitle">Powered by Microsoft Agent Framework</p>
+                </div>
+                <div class="header-settings" data-i18n="settings" aria-label="設定">
+                    <div class="model-selector-container">
+                        <label for="modelSelect" class="model-label">
+                            <i class="fas fa-brain"></i> <span data-i18n="model_label">モデル</span>
+                        </label>
+                        <select id="modelSelect" class="model-select">
+                            <option value="gpt-4.1">GPT-4.1</option>
+                            <option value="gpt-4.1-mini" selected>GPT-4.1 Mini</option>
+                            <option value="gpt-4.1-nano">GPT-4.1 Nano</option>
+                            <option value="gpt-5.2">GPT-5.2</option>
+                            <option value="gpt-5.2-chat">GPT-5.2 Chat</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <button id="settingsButtonGeneral" class="settings-button" type="button" data-i18n="settings" title="設定" aria-label="設定">
+                <i class="fas fa-gear"></i>
+            </button>
+            <button id="clearButton" class="clear-button" data-i18n="clear_chat" title="チャットをクリア" style="display: none;">
+                <span>🗑️</span>
+            </button>
+        </div>
+
+        <div class="chat-messages" id="chatMessages">
+            <!-- ウェルカムスクリーン -->
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="welcome-icon">💬</div>
+                <h2 data-i18n="welcome">ようこそ！</h2>
+                <p data-i18n="welcome_message">AIアシスタントに何でも質問してください</p>
+                <div class="example-prompts">
+                    <button class="example-button" data-i18n="sample_general_1" onclick="setPrompt(t('sample_general_1'))">
+                        AI エージェントは業務生産性を劇的に向上させるか？
+                    </button>
+                    <button class="example-button" data-i18n="sample_general_2" onclick="setPrompt(t('sample_general_2'))">
+                        企業の中長期経営戦略（成長計画・デジタル戦略・資本政策等）を分析して意見を述べよ。
+                    </button>
+                    <button class="example-button" data-i18n="sample_general_3" onclick="setPrompt(t('sample_general_3'))">
+                        このプロダクト設計は、社内ガイドラインやポリシーに反していないか？
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="chat-input-area">
+            <div class="input-wrapper">
+                <textarea id="promptInput" 
+                          data-i18n="input_placeholder"
+                          placeholder="メッセージを入力... (Enterで送信、Shift+Enterで改行)" 
+                          class="chat-input"
+                          rows="1"></textarea>
+                <button id="sendButton" class="send-button" data-i18n="send_button" title="通常チャット" disabled>
+                    <i class="fa-regular fa-paper-plane"></i>
+                </button>
+                <button id="multiAgentButton" class="multi-agent-button" data-i18n="multi_agent_button" title="マルチエージェント分析" disabled>
+                    <i class="fas fa-users"></i>
+                </button>
+            </div>
+            <div class="status-indicator" id="statusIndicator" style="display: none;">
+                <span class="status-dot"></span>
+                <span id="statusText" data-i18n="status_thinking">AI が考え中...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- RAG検索モード -->
+    <div class="chat-container" id="guidelineChat" style="display: none;">
+        <div class="chat-header">
+            <div class="header-content">
+                <div class="header-icon">📊</div>
+                <div class="header-text">
+                    <h1 data-i18n="guideline_title">RAG検索アシスタント</h1>
+                    <p class="header-subtitle" data-i18n="guideline_subtitle">ナレッジベースに基づく引用付き回答</p>
+                </div>
+                <div class="header-settings" data-i18n="settings" aria-label="設定">
+                    <div class="model-selector-container">
+                        <label for="modelSelectGuideline" class="model-label">
+                            <i class="fas fa-brain"></i> <span data-i18n="model_label">モデル</span>
+                        </label>
+                        <select id="modelSelectGuideline" class="model-select">
+                            <option value="gpt-4.1">GPT-4.1</option>
+                            <option value="gpt-4.1-mini" selected>GPT-4.1 Mini</option>
+                            <option value="gpt-4.1-nano">GPT-4.1 Nano</option>
+                            <option value="gpt-5.2">GPT-5.2</option>
+                            <option value="gpt-5.2-chat">GPT-5.2 Chat</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <button id="settingsButtonGuideline" class="settings-button" type="button" data-i18n="settings" title="設定" aria-label="設定">
+                <i class="fas fa-gear"></i>
+            </button>
+            <button id="clearButtonGuideline" class="clear-button" data-i18n="clear_chat" title="チャットをクリア" style="display: none;">
+                <span>🗑️</span>
+            </button>
+        </div>
+
+        <div class="chat-messages" id="chatMessagesGuideline">
+            <!-- ウェルカムスクリーン -->
+            <div class="welcome-screen" id="welcomeScreenGuideline">
+                <div class="welcome-icon">📊</div>
+                <h2 data-i18n="guideline_welcome">RAG検索アシスタント</h2>
+                <p data-i18n="guideline_welcome_message">ナレッジベースを検索して、出典付きで回答します</p>
+                <div class="example-prompts">
+                    <button class="example-button" data-i18n="sample_guideline_1" onclick="setPromptGuideline(t('sample_guideline_1'))">
+                        社内規程における情報持ち出し（データ取り扱い）の基本ルールは？
+                    </button>
+                    <button class="example-button" data-i18n="sample_guideline_2" onclick="setPromptGuideline(t('sample_guideline_2'))">
+                        セキュリティポリシーにある例外申請の手順は？
+                    </button>
+                    <button class="example-button" data-i18n="sample_guideline_3" onclick="setPromptGuideline(t('sample_guideline_3'))">
+                        インシデント対応手順（初動対応）の要点をまとめて。
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="chat-input-area">
+            <div class="input-wrapper">
+                <textarea id="promptInputGuideline" 
+                          data-i18n="input_placeholder_guideline"
+                          placeholder="RAG検索したい質問を入力... (Enterで送信、Shift+Enterで改行)" 
+                          class="chat-input"
+                          rows="1"></textarea>
+                <button id="sendButtonGuideline" class="send-button" data-i18n="guideline_button" title="RAG検索" disabled>
+                    <i class="fa-regular fa-paper-plane"></i>
+                </button>
+            </div>
+            <div class="status-indicator" id="statusIndicatorGuideline" style="display: none;">
+                <span class="status-dot"></span>
+                <span id="statusTextGuideline" data-i18n="status_searching">RAG検索中...</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 井戸端会議モード -->
+    <div class="chat-container" id="idobataChat" style="display: none;">
+        <div class="chat-header">
+            <div class="header-content">
+                <div class="header-icon">🗣️</div>
+                <div class="header-text">
+                    <h1 data-i18n="idobata_title">AI役員会議</h1>
+                    <p class="header-subtitle" data-i18n="idobata_subtitle">CEO/CTO/CFO/COOが経営議題を議論して実行プランを策定</p>
+                </div>
+                <div class="header-settings" data-i18n="settings" aria-label="設定">
+                    <div class="model-selector-container">
+                        <label for="modelSelectIdobata" class="model-label">
+                            <i class="fas fa-brain"></i> <span data-i18n="model_label">モデル</span>
+                        </label>
+                        <select id="modelSelectIdobata" class="model-select">
+                            <option value="gpt-4.1">GPT-4.1</option>
+                            <option value="gpt-4.1-mini" selected>GPT-4.1 Mini</option>
+                            <option value="gpt-4.1-nano">GPT-4.1 Nano</option>
+                            <option value="gpt-5.2">GPT-5.2</option>
+                            <option value="gpt-5.2-chat">GPT-5.2 Chat</option>
+                        </select>
+                    </div>
+                    <div class="model-selector-container">
+                        <label for="toneSelectIdobata" class="model-label">
+                            <i class="fas fa-comments"></i> <span data-i18n="tone_label">話し方</span>
+                        </label>
+                        <select id="toneSelectIdobata" class="model-select">
+                            <option value="formal" data-i18n="tone_formal">フォーマル（堅実・公式）</option>
+                            <option value="balanced" data-i18n="tone_balanced">バランス（標準）</option>
+                            <option value="casual" data-i18n="tone_casual">カジュアル（親しみやすい）</option>
+                            <option value="concise" selected data-i18n="tone_concise">簡潔（要点のみ）</option>
+                            <option value="detailed" data-i18n="tone_detailed">詳細（丁寧な説明）</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <button id="settingsButtonIdobata" class="settings-button" type="button" data-i18n="settings" title="設定" aria-label="設定">
+                <i class="fas fa-gear"></i>
+            </button>
+            <button id="clearButtonIdobata" class="clear-button" data-i18n="clear_chat" title="チャットをクリア" style="display: none;">
+                <span>🗑️</span>
+            </button>
+        </div>
+
+        <div class="chat-messages" id="chatMessagesIdobata">
+            <!-- ウェルカムスクリーン -->
+            <div class="welcome-screen" id="welcomeScreenIdobata">
+                <div class="welcome-icon">🗣️</div>
+                <h2 data-i18n="idobata_welcome">AI役員会議モード</h2>
+                <p data-i18n="idobata_welcome_message">経営会議の論点をCxOで協議します</p>
+                <div class="example-prompts">
+                    <button class="example-button" data-i18n="sample_idobata_1" onclick="setPromptIdobata(t('sample_idobata_1'))">
+                        デジタル口座開設の離脱率が高い。改善の経営プランを作成して。
+                    </button>
+                    <button class="example-button" data-i18n="sample_idobata_2" onclick="setPromptIdobata(t('sample_idobata_2'))">
+                        中小企業向け融資の審査を自動化したい。段階的な導入計画を策定して。
+                    </button>
+                    <button class="example-button" data-i18n="sample_idobata_3" onclick="setPromptIdobata(t('sample_idobata_3'))">
+                        デジタルチャネルの収益化を強化したい。KPIと投資計画を含むプランを作って。
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="chat-input-area">
+            <div class="input-wrapper">
+                <textarea id="promptInputIdobata" 
+                          data-i18n="input_placeholder_idobata"
+                          placeholder="AI役員会議の議題を入力... (Enterで送信、Shift+Enterで改行)" 
+                          class="chat-input"
+                          rows="1"></textarea>
+                <button id="sendButtonIdobata" class="multi-agent-button" data-i18n="idobata_button" title="AI役員会議" disabled>
+                    <i class="fas fa-users"></i>
+                </button>
+            </div>
+            <div class="status-indicator" id="statusIndicatorIdobata" style="display: none;">
+                <span class="status-dot"></span>
+                <span id="statusTextIdobata" data-i18n="status_discussing">AI役員会議で協議中...</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="{{ url_for('static', filename='js/translations.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
