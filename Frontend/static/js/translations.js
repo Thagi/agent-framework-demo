@@ -56,6 +56,14 @@ const translations = {
         'trace_status_error': 'エラー',
         'evidence_title': '根拠',
         'evidence_source': '出典',
+        'review_title': '品質評価',
+        'review_score': '評価',
+        'review_verdict': '総評',
+        'review_strengths': '良い点',
+        'review_risks': '懸念点',
+        'review_missing_info': '不足情報',
+        'review_next_step': '次に補うこと',
+        'review_fallback': '簡易レビューです',
 
         // Input area
         'input_placeholder': 'メッセージを入力... (Enterで送信、Shift+Enterで改行)',
@@ -192,6 +200,14 @@ const translations = {
         'trace_status_error': 'Error',
         'evidence_title': 'Evidence',
         'evidence_source': 'Source',
+        'review_title': 'Quality Review',
+        'review_score': 'Score',
+        'review_verdict': 'Verdict',
+        'review_strengths': 'Strengths',
+        'review_risks': 'Risks',
+        'review_missing_info': 'Missing info',
+        'review_next_step': 'Next step',
+        'review_fallback': 'Fallback review',
 
         // Input area
         'input_placeholder': 'Enter message... (Enter to send, Shift+Enter for new line)',

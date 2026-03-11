@@ -68,6 +68,8 @@ PLAN_STEP_LIMIT = max(int(os.getenv("PLAN_STEP_LIMIT", "4")), 2)
 PLAN_TOOL_LIMIT = max(int(os.getenv("PLAN_TOOL_LIMIT", "4")), 1)
 PLAN_TIMEOUT_SECONDS = max(float(os.getenv("PLAN_TIMEOUT_SECONDS", "20")), 1.0)
 ROUTE_TIMEOUT_SECONDS = max(float(os.getenv("ROUTE_TIMEOUT_SECONDS", "8")), 1.0)
+EVALUATION_TIMEOUT_SECONDS = max(float(os.getenv("EVALUATION_TIMEOUT_SECONDS", "8")), 1.0)
+ENABLE_EVALUATION_AGENT = os.getenv("ENABLE_EVALUATION_AGENT", "true").strip().lower() in {"1", "true", "yes", "y", "on"}
 MODE_GENERAL = "general"
 MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
@@ -75,6 +77,10 @@ ROUTE_MODE_MULTI_AGENT = "multi_agent"
 ROUTE_ALLOWED_MODES = {MODE_GENERAL, MODE_GUIDELINE, ROUTE_MODE_MULTI_AGENT, MODE_IDOBATA}
 CONTEXT_ALLOWED_MODES = {MODE_GENERAL, MODE_GUIDELINE, MODE_IDOBATA}
 BACKEND_DIR = Path(__file__).resolve().parent
+QUALITY_REVIEW_ITEM_LIMIT = 3
+QUALITY_REVIEW_TRACE_LIMIT = 3
+QUALITY_REVIEW_EVIDENCE_LIMIT = 3
+QUALITY_REVIEW_TEXT_LIMIT = 4000
 
 session_store = SessionStore(
     max_messages=SESSION_HISTORY_MESSAGES,
@@ -663,6 +669,13 @@ def _compact_text(value: object, limit: int = 240) -> str:
     return text[:limit]
 
 
+def _truncate_text(value: object, limit: int = QUALITY_REVIEW_TEXT_LIMIT) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "..."
+
+
 def _search_is_configured() -> bool:
     return bool(SEARCH_ENDPOINT and SEARCH_API_KEY and SEARCH_INDEX_NAME)
 
@@ -911,6 +924,25 @@ def _normalize_plan_items(values: object, *, max_items: int, fallback_prefix: st
     return [f"{fallback_prefix} {index}" for index in range(1, fallback_count + 1)]
 
 
+def _normalize_review_items(values: object, *, max_items: int, fallback_text: str) -> list[str]:
+    if isinstance(values, str):
+        values = [values]
+
+    if not isinstance(values, list):
+        values = []
+
+    normalized: list[str] = []
+    for item in values:
+        text = _coerce_plan_text(item, limit=220)
+        if not text or text in normalized:
+            continue
+        normalized.append(text)
+        if len(normalized) >= max_items:
+            break
+
+    return normalized or [fallback_text]
+
+
 def _fallback_execution_plan(prompt: str) -> dict[str, object]:
     request_summary = _coerce_plan_text(prompt, limit=160) or get_text('plan_fallback_goal', LANGUAGE)
     return {
@@ -973,6 +1005,126 @@ def _extract_plan_payload(planner_output: str, prompt: str) -> dict[str, object]
             continue
 
     return _fallback_execution_plan(prompt)
+
+
+def _fallback_quality_review(prompt: str, answer_text: str) -> dict[str, object]:
+    score = 2 if not answer_text.strip() else 3
+    return {
+        "score": score,
+        "verdict": get_text('review_fallback_verdict', LANGUAGE),
+        "strengths": [
+            get_text(
+                'review_fallback_strength',
+                LANGUAGE,
+                answer=_coerce_plan_text(answer_text, limit=140) or get_text('review_fallback_empty_answer', LANGUAGE),
+            )
+        ],
+        "risks": [get_text('review_fallback_risk', LANGUAGE)],
+        "missing_info": [get_text('review_fallback_missing_info', LANGUAGE)],
+        "recommended_next_step": get_text(
+            'review_fallback_next_step',
+            LANGUAGE,
+            request=_coerce_plan_text(prompt, limit=120) or get_text('plan_fallback_goal', LANGUAGE),
+        ),
+        "fallback_used": True,
+    }
+
+
+def _normalize_quality_review(raw_review: object, prompt: str, answer_text: str) -> dict[str, object]:
+    if not isinstance(raw_review, dict):
+        return _fallback_quality_review(prompt, answer_text)
+
+    try:
+        score = max(1, min(int(round(float(raw_review.get("score", 3)))), 5))
+    except (TypeError, ValueError):
+        score = 3
+
+    verdict = _coerce_plan_text(raw_review.get("verdict"), limit=200) or get_text('review_fallback_verdict', LANGUAGE)
+    strengths = _normalize_review_items(
+        raw_review.get("strengths"),
+        max_items=QUALITY_REVIEW_ITEM_LIMIT,
+        fallback_text=get_text('review_fallback_strength', LANGUAGE, answer=get_text('review_fallback_empty_answer', LANGUAGE)),
+    )
+    risks = _normalize_review_items(
+        raw_review.get("risks"),
+        max_items=QUALITY_REVIEW_ITEM_LIMIT,
+        fallback_text=get_text('review_fallback_risk', LANGUAGE),
+    )
+    missing_info = _normalize_review_items(
+        raw_review.get("missing_info"),
+        max_items=QUALITY_REVIEW_ITEM_LIMIT,
+        fallback_text=get_text('review_fallback_missing_info', LANGUAGE),
+    )
+    recommended_next_step = _coerce_plan_text(raw_review.get("recommended_next_step"), limit=220) or get_text(
+        'review_fallback_next_step',
+        LANGUAGE,
+        request=_coerce_plan_text(prompt, limit=120) or get_text('plan_fallback_goal', LANGUAGE),
+    )
+
+    return {
+        "score": score,
+        "verdict": verdict,
+        "strengths": strengths,
+        "risks": risks,
+        "missing_info": missing_info,
+        "recommended_next_step": recommended_next_step,
+        "fallback_used": bool(raw_review.get("fallback_used", False)),
+    }
+
+
+def _extract_quality_review_payload(evaluator_output: str, prompt: str, answer_text: str) -> dict[str, object]:
+    evaluator_output = evaluator_output.strip()
+    if not evaluator_output:
+        return _fallback_quality_review(prompt, answer_text)
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(evaluator_output):
+        if char != "{":
+            continue
+        try:
+            raw_review, _ = decoder.raw_decode(evaluator_output[index:])
+            return _normalize_quality_review(raw_review, prompt, answer_text)
+        except json.JSONDecodeError:
+            continue
+
+    return _fallback_quality_review(prompt, answer_text)
+
+
+def _build_review_context(
+    prompt: str,
+    mode: str,
+    answer_text: str,
+    *,
+    plan: dict[str, object] | None = None,
+    traces: list[dict[str, Any]] | None = None,
+    evidence: list[dict[str, str]] | None = None,
+) -> str:
+    trace_summary = [
+        {
+            "tool": _compact_text(item.get("tool"), limit=80),
+            "query": _compact_text(item.get("query"), limit=120),
+            "status": _compact_text(item.get("status"), limit=40),
+            "result_count": item.get("result_count", 0),
+        }
+        for item in (traces or [])[:QUALITY_REVIEW_TRACE_LIMIT]
+    ]
+    evidence_summary = [
+        {
+            "source": _compact_text(item.get("source"), limit=120),
+            "excerpt": _compact_text(item.get("excerpt"), limit=220),
+        }
+        for item in (evidence or [])[:QUALITY_REVIEW_EVIDENCE_LIMIT]
+    ]
+
+    payload = {
+        "mode": mode,
+        "user_request": _truncate_text(prompt, limit=1600),
+        "assistant_response": _truncate_text(answer_text, limit=QUALITY_REVIEW_TEXT_LIMIT),
+        "execution_plan": plan or None,
+        "trace_summary": trace_summary or None,
+        "evidence_summary": evidence_summary or None,
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _fallback_route_decision(prompt: str) -> dict[str, object]:
@@ -1214,6 +1366,58 @@ async def generate_execution_plan(
         return _fallback_execution_plan(prompt)
 
 
+async def generate_quality_review(
+    prompt: str,
+    mode: str,
+    answer_text: str,
+    model_name: str | None,
+    model_chat_client,
+    *,
+    plan: dict[str, object] | None = None,
+    traces: list[dict[str, Any]] | None = None,
+    evidence: list[dict[str, str]] | None = None,
+) -> dict[str, object] | None:
+    if not ENABLE_EVALUATION_AGENT:
+        return None
+
+    evaluator_agent = ChatAgent(
+        name="Evaluator",
+        chat_client=model_chat_client,
+        instructions=get_text('agent_evaluator_instructions', LANGUAGE),
+    )
+    evaluator_prompt = _build_review_context(
+        prompt,
+        mode,
+        answer_text,
+        plan=plan,
+        traces=traces,
+        evidence=evidence,
+    )
+
+    async def _run_evaluator() -> dict[str, object]:
+        evaluator_parts: list[str] = []
+        async for update in evaluator_agent.run_stream(evaluator_prompt):
+            if update.text:
+                evaluator_parts.append(update.text)
+        return _extract_quality_review_payload("".join(evaluator_parts), prompt, answer_text)
+
+    try:
+        logger.info(get_text('log_review_start', LANGUAGE, model=model_name or "-"))
+        review = await asyncio.wait_for(_run_evaluator(), timeout=EVALUATION_TIMEOUT_SECONDS)
+        logger.info(get_text('log_review_complete', LANGUAGE, score=review["score"]))
+        return review
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Evaluator timed out after %.1fs for model '%s'. Falling back to default review.",
+            EVALUATION_TIMEOUT_SECONDS,
+            model_name,
+        )
+        return _fallback_quality_review(prompt, answer_text)
+    except Exception:
+        logger.exception("Evaluator failed for model '%s'. Falling back to default review.", model_name)
+        return _fallback_quality_review(prompt, answer_text)
+
+
 async def generate_route_decision(
     prompt: str,
     context_mode: str,
@@ -1419,7 +1623,18 @@ async def api_stream(request: Request):
                         response_parts.append(update.text)
                         yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
-                await append_session_exchange(context_mode, session_id, prompt, "".join(response_parts).strip())
+                answer_text = "".join(response_parts).strip()
+                await append_session_exchange(context_mode, session_id, prompt, answer_text)
+                review = await generate_quality_review(
+                    prompt,
+                    context_mode,
+                    answer_text,
+                    model_name,
+                    model_chat_client,
+                    plan=plan,
+                )
+                if review:
+                    yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
@@ -1507,7 +1722,20 @@ async def api_guideline_stream(request: Request):
                 if evidence_items:
                     yield json.dumps({"type": "evidence", "evidence": evidence_items}, ensure_ascii=False) + "\n"
 
-                await append_session_exchange(context_mode, session_id, prompt, "".join(response_parts).strip())
+                answer_text = "".join(response_parts).strip()
+                await append_session_exchange(context_mode, session_id, prompt, answer_text)
+                review = await generate_quality_review(
+                    prompt,
+                    context_mode,
+                    answer_text,
+                    model_name,
+                    model_chat_client,
+                    plan=plan,
+                    traces=search_traces,
+                    evidence=evidence_items,
+                )
+                if review:
+                    yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
@@ -1671,6 +1899,16 @@ Positive perspective:
                     f"{synthesis_text}"
                 )
                 await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
+                review = await generate_quality_review(
+                    prompt,
+                    context_mode,
+                    assistant_summary,
+                    model_name,
+                    model_chat_client,
+                    plan=plan,
+                )
+                if review:
+                    yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
 
                 synthesis_time = time.time() - synthesis_start
                 total_time = time.time() - start_time
@@ -1927,6 +2165,16 @@ async def phase1_planning_stream(request: Request):
                 f"{''.join(board_notes['COO']).strip()}"
             )
             await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
+            review = await generate_quality_review(
+                prompt,
+                context_mode,
+                assistant_summary,
+                model_name,
+                model_chat_client,
+                plan=plan,
+            )
+            if review:
+                yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
 
             total_time = time.time() - start_time
             workflow_time = time.time() - workflow_exec_start

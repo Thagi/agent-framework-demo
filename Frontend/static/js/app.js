@@ -773,6 +773,7 @@ function normalizeStoredMessage(message) {
         ...message,
         timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
         plan: message.plan || null,
+        review: normalizeReviewData(message.review),
         traces: Array.isArray(message.traces) ? message.traces : [],
         evidence: Array.isArray(message.evidence) ? message.evidence : [],
         route_mode: typeof message.route_mode === 'string' ? message.route_mode : null,
@@ -919,6 +920,7 @@ function addAiMessage(isMultiAgentMode = false) {
         is_user: false,
         content: '',
         plan: null,
+        review: null,
         traces: [],
         evidence: [],
         timestamp: timestamp,
@@ -952,6 +954,7 @@ function addAiMessageForRoute(route) {
             is_user: false,
             timestamp,
             plan: null,
+            review: null,
             is_streaming: true,
             is_multi_agent: true,
             critical_content: '',
@@ -969,6 +972,7 @@ function addAiMessageForRoute(route) {
             is_planning: true,
             timestamp,
             plan: null,
+            review: null,
             planning_content: '',
             tech_content: '',
             business_content: '',
@@ -981,6 +985,7 @@ function addAiMessageForRoute(route) {
             is_user: false,
             content: '',
             plan: null,
+            review: null,
             traces: [],
             evidence: [],
             timestamp,
@@ -1010,6 +1015,7 @@ function addAiMessageIdobata() {
         is_planning: true,
         timestamp: timestamp,
         plan: null,
+        review: null,
         planning_content: '',
         tech_content: '',
         business_content: '',
@@ -1154,6 +1160,164 @@ function updateMultiAgentPlan(message, plan) {
     const normalized = applyExecutionPlan(planRefs, plan);
     if (normalized) {
         message.plan = normalized;
+    }
+}
+
+function normalizeReviewData(review) {
+    if (!review || typeof review !== 'object') {
+        return null;
+    }
+
+    const normalizeItems = value => {
+        if (!Array.isArray(value)) return [];
+        return value
+            .map(item => typeof item === 'string' ? item.trim() : '')
+            .filter(Boolean)
+            .slice(0, 3);
+    };
+
+    const rawScore = Number(review.score);
+    const normalized = {
+        score: Number.isFinite(rawScore) ? Math.max(1, Math.min(Math.round(rawScore), 5)) : null,
+        verdict: typeof review.verdict === 'string' ? review.verdict.trim() : '',
+        strengths: normalizeItems(review.strengths),
+        risks: normalizeItems(review.risks),
+        missing_info: normalizeItems(review.missing_info),
+        recommended_next_step: typeof review.recommended_next_step === 'string' ? review.recommended_next_step.trim() : '',
+        fallback_used: !!review.fallback_used,
+    };
+
+    if (!normalized.score && !normalized.verdict && !normalized.strengths.length && !normalized.risks.length && !normalized.missing_info.length && !normalized.recommended_next_step) {
+        return null;
+    }
+
+    return normalized;
+}
+
+function createReviewSection(title) {
+    const section = document.createElement('div');
+    section.className = 'review-section';
+
+    const heading = document.createElement('div');
+    heading.className = 'review-section-title';
+    heading.textContent = title;
+
+    const body = document.createElement('div');
+    body.className = 'review-section-body';
+
+    section.appendChild(heading);
+    section.appendChild(body);
+
+    return { section, body };
+}
+
+function createReviewPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'review-panel';
+    panel.style.display = 'none';
+
+    const header = document.createElement('div');
+    header.className = 'review-header';
+
+    const title = document.createElement('div');
+    title.className = 'review-title';
+    title.innerHTML = `<span>🧪</span><span>${t('review_title')}</span>`;
+
+    const score = document.createElement('div');
+    score.className = 'review-score';
+
+    header.appendChild(title);
+    header.appendChild(score);
+
+    const verdict = createReviewSection(t('review_verdict'));
+    const strengths = createReviewSection(t('review_strengths'));
+    const risks = createReviewSection(t('review_risks'));
+    const missing = createReviewSection(t('review_missing_info'));
+    const nextStep = createReviewSection(t('review_next_step'));
+
+    const fallback = document.createElement('div');
+    fallback.className = 'review-fallback-note';
+    fallback.style.display = 'none';
+    fallback.textContent = t('review_fallback');
+
+    panel.appendChild(header);
+    panel.appendChild(verdict.section);
+    panel.appendChild(strengths.section);
+    panel.appendChild(risks.section);
+    panel.appendChild(missing.section);
+    panel.appendChild(nextStep.section);
+    panel.appendChild(fallback);
+
+    return {
+        panel,
+        score,
+        verdictSection: verdict.section,
+        verdict: verdict.body,
+        strengthsSection: strengths.section,
+        strengths: strengths.body,
+        risksSection: risks.section,
+        risks: risks.body,
+        missingSection: missing.section,
+        missing: missing.body,
+        nextStepSection: nextStep.section,
+        nextStep: nextStep.body,
+        fallback,
+    };
+}
+
+function renderReviewItems(container, items) {
+    container.innerHTML = '';
+    if (!Array.isArray(items) || items.length === 0) {
+        return false;
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'review-list';
+    items.forEach(item => {
+        const li = document.createElement('li');
+        li.textContent = item;
+        list.appendChild(li);
+    });
+    container.appendChild(list);
+    return true;
+}
+
+function applyQualityReview(reviewRefs, review) {
+    if (!reviewRefs || !reviewRefs.panel) {
+        return null;
+    }
+
+    const normalized = normalizeReviewData(review);
+    if (!normalized) {
+        reviewRefs.panel.style.display = 'none';
+        return null;
+    }
+
+    reviewRefs.score.textContent = normalized.score ? `${t('review_score')}: ${normalized.score}/5` : '';
+    reviewRefs.verdict.textContent = normalized.verdict || '-';
+    const hasStrengths = renderReviewItems(reviewRefs.strengths, normalized.strengths);
+    const hasRisks = renderReviewItems(reviewRefs.risks, normalized.risks);
+    const hasMissing = renderReviewItems(reviewRefs.missing, normalized.missing_info);
+    reviewRefs.nextStep.textContent = normalized.recommended_next_step || '-';
+    reviewRefs.strengthsSection.style.display = hasStrengths ? 'block' : 'none';
+    reviewRefs.risksSection.style.display = hasRisks ? 'block' : 'none';
+    reviewRefs.missingSection.style.display = hasMissing ? 'block' : 'none';
+    reviewRefs.verdictSection.style.display = normalized.verdict ? 'block' : 'none';
+    reviewRefs.nextStepSection.style.display = normalized.recommended_next_step ? 'block' : 'none';
+    reviewRefs.fallback.style.display = normalized.fallback_used ? 'block' : 'none';
+    reviewRefs.panel.style.display = 'block';
+    return normalized;
+}
+
+function updateMessageReview(message, review = message.review) {
+    if (!message || message.is_user) {
+        return;
+    }
+
+    const reviewRefs = message.element && message.element.review ? message.element.review : null;
+    const normalized = applyQualityReview(reviewRefs, review);
+    if (normalized) {
+        message.review = normalized;
     }
 }
 
@@ -1411,10 +1575,12 @@ function renderNormalMessage(message) {
 
     let planRefs = null;
     let routeInfoRefs = null;
+    let reviewRefs = null;
     let diagnosticsRefs = null;
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
         routeInfoRefs = createRouteInfoPanel(message);
+        reviewRefs = createReviewPanel();
         diagnosticsRefs = createDiagnosticsPanel();
     }
     
@@ -1440,6 +1606,9 @@ function renderNormalMessage(message) {
         contentDiv.appendChild(planRefs.panel);
     }
     contentDiv.appendChild(textDiv);
+    if (reviewRefs) {
+        contentDiv.appendChild(reviewRefs.panel);
+    }
     if (diagnosticsRefs) {
         contentDiv.appendChild(diagnosticsRefs.panel);
     }
@@ -1448,12 +1617,13 @@ function renderNormalMessage(message) {
     wrapper.appendChild(messageDiv);
     chatMessages.appendChild(wrapper);
     
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, routeInfo: routeInfoRefs, diagnostics: diagnosticsRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, routeInfo: routeInfoRefs, review: reviewRefs, diagnostics: diagnosticsRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
     }
     if (!message.is_user) {
         updateRouteInfoPanel(message);
+        updateMessageReview(message);
         if (message.traces?.length || message.evidence?.length) {
             updateGuidelineDiagnostics(message);
         }
@@ -1477,6 +1647,7 @@ function renderMultiAgentMessage(message) {
 
     const planRefs = createExecutionPlanPanel();
     const routeInfoRefs = createRouteInfoPanel(message);
+    const reviewRefs = createReviewPanel();
     
     const grid = document.createElement('div');
     grid.className = 'agents-grid';
@@ -1525,12 +1696,14 @@ function renderMultiAgentMessage(message) {
     container.appendChild(planRefs.panel);
     container.appendChild(grid);
     container.appendChild(synthesisPanel);
+    container.appendChild(reviewRefs.panel);
     wrapper.appendChild(container);
     chatMessages.appendChild(wrapper);
     
     message.element = {
         plan: planRefs,
         routeInfo: routeInfoRefs,
+        review: reviewRefs,
         critical: criticalPanel.querySelector('[data-agent="critical"]'),
         positive: positivePanel.querySelector('[data-agent="positive"]'),
         synthesis: synthesisPanel.querySelector('[data-agent="synthesis"]'),
@@ -1540,6 +1713,7 @@ function renderMultiAgentMessage(message) {
         updateMultiAgentPlan(message, message.plan);
     }
     updateRouteInfoPanel(message);
+    updateMessageReview(message);
 }
 
 function renderNormalMessageIdobata(message) {
@@ -1566,9 +1740,11 @@ function renderNormalMessageIdobata(message) {
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
     let planRefs = null;
+    let reviewRefs = null;
 
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
+        reviewRefs = createReviewPanel();
     }
 
     if (message.is_user) {
@@ -1589,14 +1765,20 @@ function renderNormalMessageIdobata(message) {
         contentDiv.appendChild(planRefs.panel);
     }
     contentDiv.appendChild(textDiv);
+    if (reviewRefs) {
+        contentDiv.appendChild(reviewRefs.panel);
+    }
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessagesIdobata.appendChild(wrapper);
 
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, review: reviewRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
+    }
+    if (!message.is_user) {
+        updateMessageReview(message);
     }
 }
 
@@ -1617,6 +1799,7 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
 
     const planRefs = createExecutionPlanPanel();
     const routeInfoRefs = createRouteInfoPanel(message);
+    const reviewRefs = createReviewPanel();
 
     const grid = document.createElement('div');
     grid.className = 'agents-grid planning-grid';
@@ -1672,12 +1855,14 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
     }
     panelContainer.appendChild(planRefs.panel);
     panelContainer.appendChild(grid);
+    panelContainer.appendChild(reviewRefs.panel);
     wrapper.appendChild(panelContainer);
     targetContainer.appendChild(wrapper);
 
     message.element = {
         plan: planRefs,
         routeInfo: routeInfoRefs,
+        review: reviewRefs,
         planning: planningPanel.querySelector('[data-agent="planning"]'),
         tech: techPanel.querySelector('[data-agent="tech"]'),
         business: businessPanel.querySelector('[data-agent="business"]'),
@@ -1687,6 +1872,7 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
         updateMultiAgentPlan(message, message.plan);
     }
     updateRouteInfoPanel(message);
+    updateMessageReview(message);
 }
 
 function renderPlanningMessage(message) {
@@ -2052,6 +2238,9 @@ async function streamNormalChat(prompt, aiMessage, options = {}) {
             aiMessage.evidence = data.evidence;
             updateGuidelineDiagnostics(aiMessage);
             scrollFn();
+        } else if (data.type === 'review' && data.review) {
+            updateMessageReview(aiMessage, data.review);
+            scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);
         }
@@ -2108,6 +2297,9 @@ async function streamMultiAgentChat(prompt, aiMessage, options = {}) {
 
         if (data.type === 'plan' && data.plan) {
             updatePlanFn(aiMessage, data.plan);
+            scrollFn();
+        } else if (data.type === 'review' && data.review) {
+            updateMessageReview(aiMessage, data.review);
             scrollFn();
         } else if (data.type === 'synthesis_start') {
             aiMessage.synthesis_streaming = true;
@@ -2200,6 +2392,9 @@ async function streamIdobataChat(prompt, aiMessage, options = {}) {
 
         if (data.type === 'plan' && data.plan) {
             updatePlanFn(aiMessage, data.plan);
+            scrollFn();
+        } else if (data.type === 'review' && data.review) {
+            updateMessageReview(aiMessage, data.review);
             scrollFn();
         } else if (data.agent && data.content) {
             updatePlanningContent(aiMessage, data.agent, data.content);
@@ -2355,6 +2550,7 @@ function addAiMessageGuideline() {
         is_user: false,
         content: '',
         plan: null,
+        review: null,
         traces: [],
         evidence: [],
         timestamp: timestamp,
@@ -2391,10 +2587,12 @@ function renderMessageGuideline(message) {
     const textDiv = document.createElement('div');
     textDiv.className = 'message-text';
     let planRefs = null;
+    let reviewRefs = null;
     let diagnosticsRefs = null;
 
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
+        reviewRefs = createReviewPanel();
         diagnosticsRefs = createDiagnosticsPanel();
     }
     
@@ -2416,6 +2614,9 @@ function renderMessageGuideline(message) {
         contentDiv.appendChild(planRefs.panel);
     }
     contentDiv.appendChild(textDiv);
+    if (reviewRefs) {
+        contentDiv.appendChild(reviewRefs.panel);
+    }
     if (diagnosticsRefs) {
         contentDiv.appendChild(diagnosticsRefs.panel);
     }
@@ -2424,12 +2625,15 @@ function renderMessageGuideline(message) {
     wrapper.appendChild(messageDiv);
     chatMessagesGuideline.appendChild(wrapper);
     
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, diagnostics: diagnosticsRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, review: reviewRefs, diagnostics: diagnosticsRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
     }
-    if (!message.is_user && (message.traces.length || message.evidence.length)) {
-        updateGuidelineDiagnostics(message);
+    if (!message.is_user) {
+        updateMessageReview(message);
+        if (message.traces.length || message.evidence.length) {
+            updateGuidelineDiagnostics(message);
+        }
     }
 }
 
@@ -2549,6 +2753,9 @@ async function streamGuidelineChat(prompt, aiMessage, options = {}) {
         } else if (data.type === 'evidence' && data.evidence) {
             aiMessage.evidence = data.evidence;
             updateGuidelineDiagnostics(aiMessage);
+            scrollFn();
+        } else if (data.type === 'review' && data.review) {
+            updateMessageReview(aiMessage, data.review);
             scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);

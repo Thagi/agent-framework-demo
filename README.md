@@ -23,6 +23,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Conversation memory**: The Backend persists Agent Framework `AgentThread` state to JSON, and the Frontend persists rendered history to JSON, so sessions survive restarts
 - **Gemini switching**: OpenAI / Azure OpenAI / Gemini Developer API / Vertex AI Gemini can be switched per provider
 - **Agent routing**: From the general chat screen, Auto Route can choose between `general chat / RAG search / multi-agent analysis / AI board meeting`
+- **Quality review**: After each answer, an evaluator agent returns `score / strengths / risks / missing info / next step` so response quality is visible
 
 ### Multi-agent analysis (ConcurrentBuilder)
 <img src="./img/004.gif" width="80%" />
@@ -163,6 +164,7 @@ Notes:
 - `BACKEND_UPLOAD_STORE_PATH` overrides where uploaded PDF/image assets are stored. The default is `Backend/data/backend_upload_assets`.
 - `PLAN_TIMEOUT_SECONDS` controls how long the pre-answer planner is allowed to run. On timeout, the backend falls back to a default plan and continues with the main answer.
 - `ROUTE_TIMEOUT_SECONDS` controls how long the Auto Route router is allowed to run. On timeout, the backend falls back to heuristic routing.
+- `ENABLE_EVALUATION_AGENT` and `EVALUATION_TIMEOUT_SECONDS` control whether post-answer quality review runs and how long it may take.
 
 (Optional) If you use Azure AI Search (RAG search):
 

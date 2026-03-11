@@ -296,6 +296,7 @@ def chat_stream():
         """Generate streaming response"""
         ai_content = ""
         plan_payload = None
+        review_payload = None
         try:
             backend_request_start = time.time()
             logger.info(f"[{request_id}] {front_text('log_front_send_backend', model=model)}")
@@ -332,6 +333,8 @@ def chat_stream():
                             plan_payload = payload.get('plan')
                         elif payload.get('type') == 'delta' and payload.get('content'):
                             ai_content += payload['content']
+                        elif payload.get('type') == 'review' and payload.get('review'):
+                            review_payload = payload.get('review')
             
             total_time = time.time() - start_time
             logger.info(
@@ -343,6 +346,7 @@ def chat_stream():
                 'is_user': False,
                 'content': ai_content,
                 'plan': plan_payload,
+                'review': review_payload,
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
@@ -357,6 +361,7 @@ def chat_stream():
                 'is_user': False,
                 'content': ai_content + front_text('error_block', error=str(e)),
                 'plan': plan_payload,
+                'review': review_payload,
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
@@ -396,6 +401,7 @@ def guideline_stream():
         plan_payload = None
         trace_payloads = []
         evidence_payload = []
+        review_payload = None
         try:
             with httpx.Client(timeout=STREAMING_PROXY_TIMEOUT) as client:
                 with client.stream(
@@ -426,6 +432,8 @@ def guideline_stream():
                             trace_payloads.append(payload.get('trace'))
                         elif payload.get('type') == 'evidence' and payload.get('evidence'):
                             evidence_payload = payload.get('evidence')
+                        elif payload.get('type') == 'review' and payload.get('review'):
+                            review_payload = payload.get('review')
 
             _append_message(
                 session_id,
@@ -435,6 +443,7 @@ def guideline_stream():
                     'plan': plan_payload,
                     'traces': trace_payloads,
                     'evidence': evidence_payload,
+                    'review': review_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 } | route_metadata
@@ -450,6 +459,7 @@ def guideline_stream():
                     'plan': plan_payload,
                     'traces': trace_payloads,
                     'evidence': evidence_payload,
+                    'review': review_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 } | route_metadata
@@ -492,6 +502,7 @@ def multi_agent_stream():
             'is_multi_agent': True,
             'timestamp': datetime.now().isoformat(),
             'plan': None,
+            'review': None,
             'critical_content': '',
             'positive_content': '',
             'synthesis_content': ''
@@ -530,6 +541,8 @@ def multi_agent_stream():
                                 data = json.loads(line)
                                 if data.get('type') == 'plan':
                                     ai_message['plan'] = data.get('plan')
+                                elif data.get('type') == 'review':
+                                    ai_message['review'] = data.get('review')
                                 if 'agent' in data and 'content' in data:
                                     agent = data['agent']
                                     content = data['content']
@@ -598,6 +611,7 @@ def idobata_stream():
             'is_planning': True,
             'timestamp': datetime.now().isoformat(),
             'plan': None,
+            'review': None,
             'planning_content': '',
             'tech_content': '',
             'business_content': '',
@@ -638,6 +652,8 @@ def idobata_stream():
                                 data = json.loads(line)
                                 if data.get('type') == 'plan':
                                     ai_message['plan'] = data.get('plan')
+                                elif data.get('type') == 'review':
+                                    ai_message['review'] = data.get('review')
                                 if 'agent' in data and 'content' in data:
                                     agent = data['agent']
                                     content = data['content']

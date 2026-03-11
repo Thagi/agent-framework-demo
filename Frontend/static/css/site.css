@@ -1026,6 +1026,71 @@ body.guideline-mode .chat-header {
     color: #64748b;
 }
 
+.review-panel {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(217, 119, 6, 0.22);
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    margin-top: 0.9rem;
+    box-shadow: 0 10px 26px rgba(217, 119, 6, 0.08);
+}
+
+.review-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+.review-title {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 700;
+    color: #9a3412;
+}
+
+.review-score {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #7c2d12;
+}
+
+.review-section + .review-section {
+    margin-top: 0.7rem;
+}
+
+.review-section-title {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #475569;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    margin-bottom: 0.25rem;
+}
+
+.review-section-body {
+    font-size: 0.92rem;
+    color: #1f2937;
+    line-height: 1.5;
+}
+
+.review-list {
+    margin: 0;
+    padding-left: 1.1rem;
+}
+
+.review-list li + li {
+    margin-top: 0.22rem;
+}
+
+.review-fallback-note {
+    margin-top: 0.75rem;
+    font-size: 0.8rem;
+    color: #92400e;
+}
+
 .approval-dialog-backdrop {
     position: fixed;
     inset: 0;

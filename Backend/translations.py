@@ -61,6 +61,20 @@ translations = {
 - 会話履歴が関連する場合は steps や tools に反映する
 - tools には必要に応じて「会話履歴」「検索」「並列分析」などの手段を書く
 """,
+        'agent_evaluator_instructions': """
+あなたは品質評価専用の Evaluator Agent です。
+ユーザーの依頼と assistant_response を読み、回答品質を短く採点してください。
+最終回答そのものを書き直さず、JSON だけを返してください。
+
+出力ルール:
+- JSON 以外の文字を書かない
+- keys は必ず score, verdict, strengths, risks, missing_info, recommended_next_step を使う
+- score は 1 から 5 の整数
+- verdict は 1 文で簡潔に書く
+- strengths, risks, missing_info は 1 個以上 3 個以下の短い文字列配列
+- recommended_next_step は次に何を確認・補足すべきかを 1 文で書く
+- trace_summary や evidence_summary がある場合は、根拠の十分性も評価する
+""",
         
         # エージェントインストラクション - RAG検索
         'agent_guideline_instructions': """あなたはRAG（検索拡張生成）による参照検索アシスタントです。
@@ -282,6 +296,12 @@ PLAN_READY: 上記プランで実行準備完了
         'plan_fallback_tool_model': "会話履歴と選択中モデルを使って回答する",
         'plan_fallback_completion_relevance': "質問に直接答えていること",
         'plan_fallback_completion_actionable': "次に取るべき行動や判断材料が明確であること",
+        'review_fallback_verdict': "回答品質の自動評価を返しました。",
+        'review_fallback_strength': "回答の要旨: {answer}",
+        'review_fallback_empty_answer': "出力がまだ十分ではありません。",
+        'review_fallback_risk': "目的への適合性や根拠の十分性は追加確認が必要です。",
+        'review_fallback_missing_info': "前提条件や不足情報の確認が必要です。",
+        'review_fallback_next_step': "依頼「{request}」に対して、前提条件と必要な根拠を補足してください。",
         
         # エラーメッセージ
         'error_config_missing': "Error: model configuration is missing",
@@ -301,6 +321,8 @@ PLAN_READY: 上記プランで実行準備完了
         'log_agent_created': "⏱️ エージェント作成完了 ({time}ms)",
         'log_search_agent_creating': "🤖 検索エージェント作成開始",
         'log_search_agent_created': "⏱️ 検索エージェント作成完了 ({time}ms)",
+        'log_review_start': "🧪 品質評価開始 (model={model})",
+        'log_review_complete': "🧪 品質評価完了 (score={score})",
         'log_streaming_start': "🌊 ストリーミング開始 (プロンプト長: {length}文字)",
         'log_first_chunk': "⏱️ 最初のチャンク受信 (TTFB: {time}ms)",
         'log_completed': "✅ 完了 (総時間: {time}s, チャンク数: {count})",
@@ -395,6 +417,20 @@ Output rules:
 - completion_criteria must be an array of 2 to 3 short strings
 - Use conversation history when it is relevant
 - tools should mention practical means such as conversation memory, search, or parallel analysis when relevant
+""",
+        'agent_evaluator_instructions': """
+You are an evaluator agent focused only on answer quality.
+Read the user request and assistant_response, then return a concise quality review as JSON only.
+Do not rewrite the answer itself.
+
+Output rules:
+- Return JSON only
+- Required keys: score, verdict, strengths, risks, missing_info, recommended_next_step
+- score must be an integer from 1 to 5
+- verdict must be one concise sentence
+- strengths, risks, and missing_info must be arrays of 1 to 3 short strings
+- recommended_next_step must be one concise sentence describing what to verify or add next
+- When trace_summary or evidence_summary is present, assess whether the grounding is sufficient
 """,
         
         # Agent Instructions - RAG Search
@@ -617,6 +653,12 @@ Present a concrete executable plan.""",
         'plan_fallback_tool_model': "Use conversation memory and the selected model",
         'plan_fallback_completion_relevance': "The response directly addresses the request",
         'plan_fallback_completion_actionable': "The response leaves clear next steps or decision points",
+        'review_fallback_verdict': "Returned an automatic quality review.",
+        'review_fallback_strength': "Response summary: {answer}",
+        'review_fallback_empty_answer': "The response is still too limited.",
+        'review_fallback_risk': "Fit to the request and sufficiency of evidence still need confirmation.",
+        'review_fallback_missing_info': "Key assumptions or missing information should be clarified.",
+        'review_fallback_next_step': "For the request \"{request}\", clarify assumptions and add the necessary evidence.",
         
         # Error Messages
         'error_config_missing': "Error: model configuration is missing",
@@ -636,6 +678,8 @@ Present a concrete executable plan.""",
         'log_agent_created': "⏱️ Agent created ({time}ms)",
         'log_search_agent_creating': "🤖 Creating search agent",
         'log_search_agent_created': "⏱️ Search agent created ({time}ms)",
+        'log_review_start': "🧪 Starting quality review (model={model})",
+        'log_review_complete': "🧪 Quality review completed (score={score})",
         'log_streaming_start': "🌊 Streaming started (prompt length: {length} chars)",
         'log_first_chunk': "⏱️ First chunk received (TTFB: {time}ms)",
         'log_completed': "✅ Completed (total time: {time}s, chunks: {count})",
