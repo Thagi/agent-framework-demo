@@ -62,6 +62,7 @@ const translations = {
         'input_placeholder_guideline': 'RAG検索したい質問を入力... (Enterで送信、Shift+Enterで改行)',
         'input_placeholder_idobata': 'AI役員会議の議題を入力... (Enterで送信、Shift+Enterで改行)',
         'send_button': '通常チャット',
+        'auto_route_button': '自動振分け',
         'multi_agent_button': 'マルチエージェント分析',
         'guideline_button': 'RAG検索',
         'idobata_button': 'AI役員会議',
@@ -77,9 +78,17 @@ const translations = {
 
         // Status
         'status_thinking': 'AI が考え中...',
+        'status_routing': '最適なAgentを選択中...',
         'status_multi_agent_analyzing': 'マルチエージェント分析中...',
         'status_searching': 'RAG検索中...',
         'status_discussing': 'AI役員会議で協議中...',
+        'route_info_title': 'Auto Route',
+        'route_reason_label': '判断理由',
+        'route_confidence_label': '信頼度',
+        'route_mode_general': '通常チャット',
+        'route_mode_guideline': 'RAG検索',
+        'route_mode_multi_agent': 'マルチエージェント分析',
+        'route_mode_idobata': 'AI役員会議',
 
         // Dialog
         'confirm_clear_chat': 'チャット履歴をクリアしますか？',
@@ -189,6 +198,7 @@ const translations = {
         'input_placeholder_guideline': 'Ask a question to search with RAG... (Enter to send, Shift+Enter for new line)',
         'input_placeholder_idobata': 'Enter board meeting agenda... (Enter to send, Shift+Enter for new line)',
         'send_button': 'General Chat',
+        'auto_route_button': 'Auto Route',
         'multi_agent_button': 'Multi-Agent Analysis',
         'guideline_button': 'RAG Search',
         'idobata_button': 'AI Board Meeting',
@@ -204,9 +214,17 @@ const translations = {
 
         // Status
         'status_thinking': 'AI is thinking...',
+        'status_routing': 'Selecting the best agent route...',
         'status_multi_agent_analyzing': 'Analyzing with multiple agents...',
         'status_searching': 'Searching knowledge base...',
         'status_discussing': 'AI Board is discussing...',
+        'route_info_title': 'Auto Route',
+        'route_reason_label': 'Why this route',
+        'route_confidence_label': 'Confidence',
+        'route_mode_general': 'General Chat',
+        'route_mode_guideline': 'RAG Search',
+        'route_mode_multi_agent': 'Multi-Agent Analysis',
+        'route_mode_idobata': 'AI Board Meeting',
 
         // Dialog
         'confirm_clear_chat': 'Clear chat history?',

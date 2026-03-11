@@ -22,6 +22,7 @@
 - **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`をJSONへ永続化し、Frontendの表示履歴もJSONへ保持するため再起動後も継続会話できる
 - **Gemini切替対応**: OpenAI / Azure OpenAI / Gemini Developer API / Vertex AI Gemini を provider 単位で切り替え可能
+- **Agent Routing**: 通常チャット画面から Auto Route を実行すると、`通常チャット / RAG検索 / マルチエージェント分析 / AI役員会議` を自動選択
 
 
 ### マルチエージェント分析（ConcurrentBuilder）
@@ -162,6 +163,7 @@ provider ごとの必須項目:
 - `BACKEND_SESSION_STORE_PATH` を指定すると、Backend の会話履歴と添付ファイルメタデータの保存先を変更できます。省略時は `Backend/data/backend_sessions` です。
 - `BACKEND_UPLOAD_STORE_PATH` を指定すると、PDF / 画像の原本を保存する場所を変更できます。省略時は `Backend/data/backend_upload_assets` です。
 - `PLAN_TIMEOUT_SECONDS` は回答前の plan 生成に使う上限秒数です。タイムアウト時は fallback plan に切り替えて本回答を継続します。
+- `ROUTE_TIMEOUT_SECONDS` は Auto Route 用の router 判定に使う上限秒数です。タイムアウト時はヒューリスティック判定へフォールバックします。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 

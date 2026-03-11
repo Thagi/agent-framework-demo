@@ -19,6 +19,7 @@ const chatMessages = document.getElementById('chatMessages');
 const welcomeScreen = document.getElementById('welcomeScreen');
 const promptInput = document.getElementById('promptInput');
 const sendButton = document.getElementById('sendButton');
+const autoRouteButton = document.getElementById('autoRouteButton');
 const multiAgentButton = document.getElementById('multiAgentButton');
 const clearButton = document.getElementById('clearButton');
 const statusIndicator = document.getElementById('statusIndicator');
@@ -451,6 +452,7 @@ function switchMode(mode) {
 promptInput.addEventListener('input', updateButtons);
 promptInput.addEventListener('keydown', handleKeyDown);
 sendButton.addEventListener('click', () => startChat(false));
+autoRouteButton.addEventListener('click', startAutoRouteChat);
 multiAgentButton.addEventListener('click', () => startChat(true));
 clearButton.addEventListener('click', clearChat);
 
@@ -542,6 +544,7 @@ function updateButtons() {
     const hasText = promptInput.value.trim().length > 0;
     const hasModel = modelSelect && !modelSelect.disabled && !!modelSelect.value;
     sendButton.disabled = isBusy || !hasText || !hasModel;
+    autoRouteButton.disabled = isBusy || !hasText || !hasModel;
     multiAgentButton.disabled = isBusy || !hasText || !hasModel;
 }
 
@@ -614,6 +617,70 @@ function getApprovalModeLabel(mode) {
     if (mode === 'guideline') return t('mode_guideline');
     if (mode === 'idobata') return t('idobata_title');
     return t('mode_general');
+}
+
+function getRouteModeLabel(mode) {
+    if (mode === 'guideline') return t('route_mode_guideline');
+    if (mode === 'multi_agent') return t('route_mode_multi_agent');
+    if (mode === 'idobata') return t('route_mode_idobata');
+    return t('route_mode_general');
+}
+
+function buildStoredUserContent(prompt, route) {
+    return `🧭 [${t('auto_route_button')} → ${getRouteModeLabel(route.mode)}] ${prompt}`;
+}
+
+function createRouteInfoPanel(message) {
+    if (!message || !message.route_mode) {
+        return null;
+    }
+
+    const panel = document.createElement('div');
+    panel.className = 'route-info-panel';
+    panel.style.display = 'none';
+
+    const header = document.createElement('div');
+    header.className = 'route-info-header';
+    header.innerHTML = `<span>🧭</span><span>${t('route_info_title')}: ${getRouteModeLabel(message.route_mode)}</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'route-info-body';
+
+    panel.appendChild(header);
+    panel.appendChild(body);
+
+    return { panel, body };
+}
+
+function updateRouteInfoPanel(message) {
+    if (!message || message.is_user || !message.element || !message.element.routeInfo) {
+        return;
+    }
+
+    const refs = message.element.routeInfo;
+    const hasReason = typeof message.route_reason === 'string' && message.route_reason.trim().length > 0;
+    const hasConfidence = Number.isFinite(message.route_confidence);
+    refs.body.innerHTML = '';
+
+    if (!message.route_mode) {
+        refs.panel.style.display = 'none';
+        return;
+    }
+
+    if (hasReason) {
+        const reason = document.createElement('div');
+        reason.textContent = `${t('route_reason_label')}: ${message.route_reason.trim()}`;
+        refs.body.appendChild(reason);
+    }
+
+    if (hasConfidence) {
+        const meta = document.createElement('div');
+        meta.className = 'route-info-meta';
+        meta.textContent = `${t('route_confidence_label')}: ${Math.round(message.route_confidence * 100)}%`;
+        refs.body.appendChild(meta);
+    }
+
+    refs.panel.style.display = 'block';
 }
 
 function buildApprovalRequest(mode, modelId) {
@@ -708,6 +775,9 @@ function normalizeStoredMessage(message) {
         plan: message.plan || null,
         traces: Array.isArray(message.traces) ? message.traces : [],
         evidence: Array.isArray(message.evidence) ? message.evidence : [],
+        route_mode: typeof message.route_mode === 'string' ? message.route_mode : null,
+        route_reason: typeof message.route_reason === 'string' ? message.route_reason : '',
+        route_confidence: Number.isFinite(message.route_confidence) ? message.route_confidence : Number(message.route_confidence),
         is_streaming: false,
         critical_streaming: false,
         positive_streaming: false,
@@ -719,6 +789,10 @@ function normalizeStoredMessage(message) {
         normalized.critical_content = normalized.critical_content || '';
         normalized.positive_content = normalized.positive_content || '';
         normalized.synthesis_content = normalized.synthesis_content || '';
+    }
+
+    if (!Number.isFinite(normalized.route_confidence)) {
+        normalized.route_confidence = null;
     }
 
     if (normalized.is_planning) {
@@ -809,12 +883,16 @@ function hideWelcomeScreenIdobata() {
 }
 
 function addUserMessage(content, isMultiAgentMode = false) {
-    const timestamp = new Date();
     const prefix = isMultiAgentMode ? `🔀 [${t('multi_agent_button')}] ` : '';
+    addUserMessageToGeneral(prefix + content);
+}
+
+function addUserMessageToGeneral(content) {
+    const timestamp = new Date();
     const message = {
         is_user: true,
-        content: prefix + content,
-        timestamp: timestamp
+        content,
+        timestamp,
     };
     messages.push(message);
     renderMessage(message);
@@ -841,6 +919,8 @@ function addAiMessage(isMultiAgentMode = false) {
         is_user: false,
         content: '',
         plan: null,
+        traces: [],
+        evidence: [],
         timestamp: timestamp,
         is_streaming: true,
         is_multi_agent: isMultiAgentMode,
@@ -852,6 +932,71 @@ function addAiMessage(isMultiAgentMode = false) {
         synthesis_streaming: false,
         element: null
     };
+    messages.push(message);
+    renderMessage(message);
+    scrollToBottom();
+    return message;
+}
+
+function addAiMessageForRoute(route) {
+    const timestamp = new Date();
+    const routeFields = {
+        route_mode: route.mode,
+        route_reason: route.reason || '',
+        route_confidence: Number.isFinite(route.confidence) ? route.confidence : null,
+    };
+
+    let message;
+    if (route.mode === 'multi_agent') {
+        message = {
+            is_user: false,
+            timestamp,
+            plan: null,
+            is_streaming: true,
+            is_multi_agent: true,
+            critical_content: '',
+            positive_content: '',
+            synthesis_content: '',
+            critical_streaming: true,
+            positive_streaming: true,
+            synthesis_streaming: false,
+            element: null,
+            ...routeFields,
+        };
+    } else if (route.mode === 'idobata') {
+        message = {
+            is_user: false,
+            is_planning: true,
+            timestamp,
+            plan: null,
+            planning_content: '',
+            tech_content: '',
+            business_content: '',
+            synthesis_content: '',
+            element: null,
+            ...routeFields,
+        };
+    } else {
+        message = {
+            is_user: false,
+            content: '',
+            plan: null,
+            traces: [],
+            evidence: [],
+            timestamp,
+            is_streaming: true,
+            is_multi_agent: false,
+            critical_content: '',
+            positive_content: '',
+            synthesis_content: '',
+            critical_streaming: false,
+            positive_streaming: false,
+            synthesis_streaming: false,
+            element: null,
+            ...routeFields,
+        };
+    }
+
     messages.push(message);
     renderMessage(message);
     scrollToBottom();
@@ -878,7 +1023,9 @@ function addAiMessageIdobata() {
 }
 
 function renderMessage(message) {
-    if (message.is_multi_agent) {
+    if (message.is_planning) {
+        renderPlanningMessageInContainer(message, chatMessages, t('idobata_planning_title'));
+    } else if (message.is_multi_agent) {
         renderMultiAgentMessage(message);
     } else {
         renderNormalMessage(message);
@@ -1263,8 +1410,12 @@ function renderNormalMessage(message) {
     textDiv.className = 'message-text';
 
     let planRefs = null;
+    let routeInfoRefs = null;
+    let diagnosticsRefs = null;
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
+        routeInfoRefs = createRouteInfoPanel(message);
+        diagnosticsRefs = createDiagnosticsPanel();
     }
     
     // User messages are plain text; AI messages are rendered as Markdown
@@ -1282,18 +1433,30 @@ function renderNormalMessage(message) {
     }
     
     contentDiv.appendChild(header);
+    if (routeInfoRefs) {
+        contentDiv.appendChild(routeInfoRefs.panel);
+    }
     if (planRefs) {
         contentDiv.appendChild(planRefs.panel);
     }
     contentDiv.appendChild(textDiv);
+    if (diagnosticsRefs) {
+        contentDiv.appendChild(diagnosticsRefs.panel);
+    }
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessages.appendChild(wrapper);
     
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, routeInfo: routeInfoRefs, diagnostics: diagnosticsRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
+    }
+    if (!message.is_user) {
+        updateRouteInfoPanel(message);
+        if (message.traces?.length || message.evidence?.length) {
+            updateGuidelineDiagnostics(message);
+        }
     }
 }
 
@@ -1313,6 +1476,7 @@ function renderMultiAgentMessage(message) {
     `;
 
     const planRefs = createExecutionPlanPanel();
+    const routeInfoRefs = createRouteInfoPanel(message);
     
     const grid = document.createElement('div');
     grid.className = 'agents-grid';
@@ -1355,6 +1519,9 @@ function renderMultiAgentMessage(message) {
     `;
     
     container.appendChild(header);
+    if (routeInfoRefs) {
+        container.appendChild(routeInfoRefs.panel);
+    }
     container.appendChild(planRefs.panel);
     container.appendChild(grid);
     container.appendChild(synthesisPanel);
@@ -1363,6 +1530,7 @@ function renderMultiAgentMessage(message) {
     
     message.element = {
         plan: planRefs,
+        routeInfo: routeInfoRefs,
         critical: criticalPanel.querySelector('[data-agent="critical"]'),
         positive: positivePanel.querySelector('[data-agent="positive"]'),
         synthesis: synthesisPanel.querySelector('[data-agent="synthesis"]'),
@@ -1371,6 +1539,7 @@ function renderMultiAgentMessage(message) {
     if (message.plan) {
         updateMultiAgentPlan(message, message.plan);
     }
+    updateRouteInfoPanel(message);
 }
 
 function renderNormalMessageIdobata(message) {
@@ -1431,22 +1600,23 @@ function renderNormalMessageIdobata(message) {
     }
 }
 
-function renderPlanningMessage(message) {
+function renderPlanningMessageInContainer(message, targetContainer, title) {
     const wrapper = document.createElement('div');
     wrapper.className = 'message-wrapper ai-wrapper';
 
-    const container = document.createElement('div');
-    container.className = 'multi-agent-container';
+    const panelContainer = document.createElement('div');
+    panelContainer.className = 'multi-agent-container';
 
     const header = document.createElement('div');
     header.className = 'multi-agent-header';
     header.innerHTML = `
         <span class="multi-agent-icon">🗣️</span>
-        <strong>${t('idobata_planning_title')}</strong>
+        <strong>${title}</strong>
         <span class="message-time">${formatTime(message.timestamp)}</span>
     `;
 
     const planRefs = createExecutionPlanPanel();
+    const routeInfoRefs = createRouteInfoPanel(message);
 
     const grid = document.createElement('div');
     grid.className = 'agents-grid planning-grid';
@@ -1496,14 +1666,18 @@ function renderPlanningMessage(message) {
     grid.appendChild(businessPanel);
     grid.appendChild(synthesisPanel);
 
-    container.appendChild(header);
-    container.appendChild(planRefs.panel);
-    container.appendChild(grid);
-    wrapper.appendChild(container);
-    chatMessagesIdobata.appendChild(wrapper);
+    panelContainer.appendChild(header);
+    if (routeInfoRefs) {
+        panelContainer.appendChild(routeInfoRefs.panel);
+    }
+    panelContainer.appendChild(planRefs.panel);
+    panelContainer.appendChild(grid);
+    wrapper.appendChild(panelContainer);
+    targetContainer.appendChild(wrapper);
 
     message.element = {
         plan: planRefs,
+        routeInfo: routeInfoRefs,
         planning: planningPanel.querySelector('[data-agent="planning"]'),
         tech: techPanel.querySelector('[data-agent="tech"]'),
         business: businessPanel.querySelector('[data-agent="business"]'),
@@ -1512,6 +1686,11 @@ function renderPlanningMessage(message) {
     if (message.plan) {
         updateMultiAgentPlan(message, message.plan);
     }
+    updateRouteInfoPanel(message);
+}
+
+function renderPlanningMessage(message) {
+    renderPlanningMessageInContainer(message, chatMessagesIdobata, t('idobata_planning_title'));
 }
 
 function updateMessageContent(message, content) {
@@ -1588,9 +1767,9 @@ function updatePlanningContent(message, agent, content) {
     }
 }
 
-function setStatus(busy, multiAgent = false) {
+function setStatus(busy, action = 'general', statusKey = null) {
     isBusy = busy;
-    isMultiAgent = multiAgent;
+    isMultiAgent = action === 'multi_agent';
     
     setStreamingUi(busy);
     
@@ -1601,18 +1780,180 @@ function setStatus(busy, multiAgent = false) {
     
     if (busy) {
         statusIndicator.style.display = 'flex';
-        statusText.textContent = multiAgent ? t('status_multi_agent_analyzing') : t('status_thinking');
+        if (statusKey) {
+            statusText.textContent = t(statusKey);
+        } else if (action === 'multi_agent') {
+            statusText.textContent = t('status_multi_agent_analyzing');
+        } else if (action === 'guideline') {
+            statusText.textContent = t('status_searching');
+        } else if (action === 'idobata') {
+            statusText.textContent = t('status_discussing');
+        } else if (action === 'auto') {
+            statusText.textContent = t('status_routing');
+        } else {
+            statusText.textContent = t('status_thinking');
+        }
         
         // Swap button icon while streaming
-        if (multiAgent) {
+        if (action === 'multi_agent') {
             multiAgentButton.innerHTML = '<span class="spinner-icon">⟳</span>';
+        } else if (action === 'auto') {
+            autoRouteButton.innerHTML = '<span class="spinner-icon">⟳</span>';
         } else {
             sendButton.innerHTML = '<span class="spinner-icon">⟳</span>';
         }
     } else {
         statusIndicator.style.display = 'none';
         sendButton.innerHTML = '<i class="fa-regular fa-paper-plane"></i>';
+        autoRouteButton.innerHTML = '<i class="fas fa-compass"></i>';
         multiAgentButton.innerHTML = '<i class="fas fa-users"></i>';
+    }
+}
+
+function getStatusKeyForRoute(mode) {
+    if (mode === 'guideline') return 'status_searching';
+    if (mode === 'multi_agent') return 'status_multi_agent_analyzing';
+    if (mode === 'idobata') return 'status_discussing';
+    return 'status_thinking';
+}
+
+function normalizeRouteDecision(route) {
+    if (!route || typeof route !== 'object') {
+        return { mode: 'general', reason: '', confidence: 0, fallback_used: true };
+    }
+
+    const mode = ['general', 'guideline', 'multi_agent', 'idobata'].includes(route.mode)
+        ? route.mode
+        : 'general';
+    const reason = typeof route.reason === 'string' ? route.reason.trim() : '';
+    const numericConfidence = Number(route.confidence);
+
+    return {
+        mode,
+        reason,
+        confidence: Number.isFinite(numericConfidence) ? Math.max(0, Math.min(numericConfidence, 1)) : 0,
+        fallback_used: !!route.fallback_used,
+    };
+}
+
+async function requestAutoRoute(prompt, modelId) {
+    const response = await fetch('/api/chat/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            prompt,
+            session_id: sessionId,
+            model: modelId,
+            context_mode: 'general'
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return normalizeRouteDecision(await response.json());
+}
+
+async function startAutoRouteChat() {
+    const prompt = promptInput.value.trim();
+    if (!prompt || isBusy) return;
+
+    const selectedModel = modelSelect.value;
+    setStatus(true, 'auto', 'status_routing');
+
+    let route;
+    try {
+        route = await requestAutoRoute(prompt, selectedModel);
+    } catch (error) {
+        route = normalizeRouteDecision({ mode: 'general', reason: error.message, confidence: 0, fallback_used: true });
+    }
+
+    const approved = await ensureApprovalBeforeRun(route.mode, selectedModel, promptInput);
+    if (!approved) {
+        setStatus(false);
+        return;
+    }
+
+    promptInput.value = '';
+    updateButtons();
+
+    const storedUserContent = buildStoredUserContent(prompt, route);
+    addUserMessageToGeneral(storedUserContent);
+    const aiMessage = addAiMessageForRoute(route);
+
+    setStatus(true, 'auto', getStatusKeyForRoute(route.mode));
+
+    const requestExtras = {
+        context_mode: 'general',
+        stored_user_content: storedUserContent,
+        route_mode: route.mode,
+        route_reason: route.reason,
+        route_confidence: route.confidence,
+    };
+
+    try {
+        if (route.mode === 'guideline') {
+            await streamGuidelineChat(prompt, aiMessage, {
+                model: selectedModel,
+                sessionId,
+                endpoint: '/api/rag/stream',
+                scrollFn: scrollToBottom,
+                updateContentFn: updateMessageContent,
+                updatePlanFn: updateMessagePlan,
+                requestExtras,
+            });
+        } else if (route.mode === 'multi_agent') {
+            await streamMultiAgentChat(prompt, aiMessage, {
+                model: selectedModel,
+                sessionId,
+                endpoint: '/api/chat/multi-agent-stream',
+                scrollFn: scrollToBottom,
+                updatePlanFn: updateMultiAgentPlan,
+                requestExtras,
+            });
+        } else if (route.mode === 'idobata') {
+            await streamIdobataChat(prompt, aiMessage, {
+                model: selectedModel,
+                tone: 'balanced',
+                sessionId,
+                endpoint: '/api/chat/idobata-stream',
+                scrollFn: scrollToBottom,
+                updatePlanFn: updateMultiAgentPlan,
+                requestExtras,
+            });
+        } else {
+            await streamNormalChat(prompt, aiMessage, {
+                model: selectedModel,
+                sessionId,
+                endpoint: '/api/chat/stream',
+                scrollFn: scrollToBottom,
+                updateContentFn: updateMessageContent,
+                updatePlanFn: updateMessagePlan,
+                requestExtras,
+            });
+        }
+    } catch (error) {
+        const errorMsg = `\n\n${t('error_prefix')}${error.message}`;
+        if (route.mode === 'multi_agent') {
+            aiMessage.synthesis_content = errorMsg;
+            updateMultiAgentContent(aiMessage, 'Synthesizer', errorMsg);
+        } else if (route.mode === 'idobata') {
+            aiMessage.synthesis_content += errorMsg;
+            updatePlanningContent(aiMessage, 'COO', errorMsg);
+        } else {
+            updateMessageContent(aiMessage, `${aiMessage.content || ''}${errorMsg}`);
+        }
+    } finally {
+        aiMessage.is_streaming = false;
+        aiMessage.critical_streaming = false;
+        aiMessage.positive_streaming = false;
+        aiMessage.synthesis_streaming = false;
+
+        if (!aiMessage.is_multi_agent && !aiMessage.is_planning) {
+            updateMessageContent(aiMessage, aiMessage.content);
+        }
+        setStatus(false);
     }
 }
 
@@ -1634,7 +1975,7 @@ async function startChat(multiAgent = false) {
     addUserMessage(prompt, multiAgent);
     const aiMessage = addAiMessage(multiAgent);
     
-    setStatus(true, multiAgent);
+    setStatus(true, multiAgent ? 'multi_agent' : 'general');
     
     try {
         if (multiAgent) {
@@ -1664,12 +2005,24 @@ async function startChat(multiAgent = false) {
     }
 }
 
-async function streamNormalChat(prompt, aiMessage) {
-    const selectedModel = modelSelect.value;
-    const response = await fetch('/api/chat/stream', {
+async function streamNormalChat(prompt, aiMessage, options = {}) {
+    const selectedModel = options.model || modelSelect.value;
+    const endpoint = options.endpoint || '/api/chat/stream';
+    const sessionKey = options.sessionId || sessionId;
+    const scrollFn = options.scrollFn || scrollToBottom;
+    const updateContentFn = options.updateContentFn || updateMessageContent;
+    const updatePlanFn = options.updatePlanFn || updateMessagePlan;
+    const body = {
+        prompt,
+        session_id: sessionKey,
+        model: selectedModel,
+        ...options.requestExtras,
+    };
+
+    const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, session_id: sessionId, model: selectedModel })
+        body: JSON.stringify(body)
     });
     
     if (!response.ok) {
@@ -1685,12 +2038,20 @@ async function streamNormalChat(prompt, aiMessage) {
         if (!data) return;
 
         if (data.type === 'plan' && data.plan) {
-            updateMessagePlan(aiMessage, data.plan);
-            scrollToBottom();
+            updatePlanFn(aiMessage, data.plan);
+            scrollFn();
         } else if (data.type === 'delta' && data.content) {
             aiMessage.content += data.content;
-            updateMessageContent(aiMessage, aiMessage.content);
-            scrollToBottom();
+            updateContentFn(aiMessage, aiMessage.content);
+            scrollFn();
+        } else if (data.type === 'trace' && data.trace) {
+            aiMessage.traces = [...(aiMessage.traces || []), data.trace];
+            updateGuidelineDiagnostics(aiMessage);
+            scrollFn();
+        } else if (data.type === 'evidence' && data.evidence) {
+            aiMessage.evidence = data.evidence;
+            updateGuidelineDiagnostics(aiMessage);
+            scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);
         }
@@ -1714,12 +2075,23 @@ async function streamNormalChat(prompt, aiMessage) {
     }
 }
 
-async function streamMultiAgentChat(prompt, aiMessage) {
-    const selectedModel = modelSelect.value;
-    const response = await fetch('/api/chat/multi-agent-stream', {
+async function streamMultiAgentChat(prompt, aiMessage, options = {}) {
+    const selectedModel = options.model || modelSelect.value;
+    const endpoint = options.endpoint || '/api/chat/multi-agent-stream';
+    const sessionKey = options.sessionId || sessionId;
+    const scrollFn = options.scrollFn || scrollToBottom;
+    const updatePlanFn = options.updatePlanFn || updateMultiAgentPlan;
+    const body = {
+        prompt,
+        session_id: sessionKey,
+        model: selectedModel,
+        ...options.requestExtras,
+    };
+
+    const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, session_id: sessionId, model: selectedModel })
+        body: JSON.stringify(body)
     });
     
     if (!response.ok) {
@@ -1735,13 +2107,13 @@ async function streamMultiAgentChat(prompt, aiMessage) {
         if (!data) return;
 
         if (data.type === 'plan' && data.plan) {
-            updateMultiAgentPlan(aiMessage, data.plan);
-            scrollToBottom();
+            updatePlanFn(aiMessage, data.plan);
+            scrollFn();
         } else if (data.type === 'synthesis_start') {
             aiMessage.synthesis_streaming = true;
         } else if (data.agent && data.content) {
             updateMultiAgentContent(aiMessage, data.agent, data.content);
-            scrollToBottom();
+            scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);
         }
@@ -1793,13 +2165,25 @@ async function startIdobataChat() {
     }
 }
 
-async function streamIdobataChat(prompt, aiMessage) {
-    const selectedModel = modelSelectIdobata.value;
-    const selectedTone = toneSelectIdobata.value;
-    const response = await fetch('/api/chat/idobata-stream', {
+async function streamIdobataChat(prompt, aiMessage, options = {}) {
+    const selectedModel = options.model || modelSelectIdobata.value;
+    const selectedTone = options.tone || toneSelectIdobata.value;
+    const endpoint = options.endpoint || '/api/chat/idobata-stream';
+    const sessionKey = options.sessionId || sessionIdIdobata;
+    const scrollFn = options.scrollFn || scrollToBottomIdobata;
+    const updatePlanFn = options.updatePlanFn || updateMultiAgentPlan;
+    const body = {
+        prompt,
+        session_id: sessionKey,
+        model: selectedModel,
+        tone: selectedTone,
+        ...options.requestExtras,
+    };
+
+    const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, session_id: sessionIdIdobata, model: selectedModel, tone: selectedTone })
+        body: JSON.stringify(body)
     });
 
     if (!response.ok) {
@@ -1815,11 +2199,11 @@ async function streamIdobataChat(prompt, aiMessage) {
         if (!data) return;
 
         if (data.type === 'plan' && data.plan) {
-            updateMultiAgentPlan(aiMessage, data.plan);
-            scrollToBottomIdobata();
+            updatePlanFn(aiMessage, data.plan);
+            scrollFn();
         } else if (data.agent && data.content) {
             updatePlanningContent(aiMessage, data.agent, data.content);
-            scrollToBottomIdobata();
+            scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);
         }
@@ -2119,12 +2503,24 @@ function setStatusIdobata(busy) {
     }
 }
 
-async function streamGuidelineChat(prompt, aiMessage) {
-    const selectedModel = modelSelectGuideline.value;
-    const response = await fetch('/api/rag/stream', {
+async function streamGuidelineChat(prompt, aiMessage, options = {}) {
+    const selectedModel = options.model || modelSelectGuideline.value;
+    const endpoint = options.endpoint || '/api/rag/stream';
+    const sessionKey = options.sessionId || sessionIdGuideline;
+    const scrollFn = options.scrollFn || scrollToBottomGuideline;
+    const updateContentFn = options.updateContentFn || updateMessageContentGuideline;
+    const updatePlanFn = options.updatePlanFn || updateMessagePlan;
+    const body = {
+        prompt,
+        session_id: sessionKey,
+        model: selectedModel,
+        ...options.requestExtras,
+    };
+
+    const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, session_id: sessionIdGuideline, model: selectedModel })
+        body: JSON.stringify(body)
     });
     
     if (!response.ok) {
@@ -2140,20 +2536,20 @@ async function streamGuidelineChat(prompt, aiMessage) {
         if (!data) return;
 
         if (data.type === 'plan' && data.plan) {
-            updateMessagePlan(aiMessage, data.plan);
-            scrollToBottomGuideline();
+            updatePlanFn(aiMessage, data.plan);
+            scrollFn();
         } else if (data.type === 'delta' && data.content) {
             aiMessage.content += data.content;
-            updateMessageContentGuideline(aiMessage, aiMessage.content);
-            scrollToBottomGuideline();
+            updateContentFn(aiMessage, aiMessage.content);
+            scrollFn();
         } else if (data.type === 'trace' && data.trace) {
             aiMessage.traces = [...(aiMessage.traces || []), data.trace];
             updateGuidelineDiagnostics(aiMessage);
-            scrollToBottomGuideline();
+            scrollFn();
         } else if (data.type === 'evidence' && data.evidence) {
             aiMessage.evidence = data.evidence;
             updateGuidelineDiagnostics(aiMessage);
-            scrollToBottomGuideline();
+            scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);
         }

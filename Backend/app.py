@@ -67,9 +67,13 @@ PROMPT_HISTORY_MESSAGES = max(int(os.getenv("PROMPT_HISTORY_MESSAGES", "8")), 2)
 PLAN_STEP_LIMIT = max(int(os.getenv("PLAN_STEP_LIMIT", "4")), 2)
 PLAN_TOOL_LIMIT = max(int(os.getenv("PLAN_TOOL_LIMIT", "4")), 1)
 PLAN_TIMEOUT_SECONDS = max(float(os.getenv("PLAN_TIMEOUT_SECONDS", "20")), 1.0)
+ROUTE_TIMEOUT_SECONDS = max(float(os.getenv("ROUTE_TIMEOUT_SECONDS", "8")), 1.0)
 MODE_GENERAL = "general"
 MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
+ROUTE_MODE_MULTI_AGENT = "multi_agent"
+ROUTE_ALLOWED_MODES = {MODE_GENERAL, MODE_GUIDELINE, ROUTE_MODE_MULTI_AGENT, MODE_IDOBATA}
+CONTEXT_ALLOWED_MODES = {MODE_GENERAL, MODE_GUIDELINE, MODE_IDOBATA}
 BACKEND_DIR = Path(__file__).resolve().parent
 
 session_store = SessionStore(
@@ -610,6 +614,12 @@ def get_session_id(body: dict, default: str = "default") -> str:
     return session_id or default
 
 
+def get_context_mode(body: dict, default_mode: str) -> str:
+    raw_mode = body.get("context_mode", default_mode)
+    mode = str(raw_mode).strip().lower() if raw_mode is not None else default_mode
+    return mode if mode in CONTEXT_ALLOWED_MODES else default_mode
+
+
 def _message_role_value(message: ChatMessage) -> str:
     role = getattr(message, "role", "")
     return getattr(role, "value", str(role))
@@ -651,6 +661,10 @@ def _coerce_plan_text(value: object, limit: int = 240) -> str:
 def _compact_text(value: object, limit: int = 240) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
+
+
+def _search_is_configured() -> bool:
+    return bool(SEARCH_ENDPOINT and SEARCH_API_KEY and SEARCH_INDEX_NAME)
 
 
 def _append_search_trace(trace: dict[str, Any]) -> None:
@@ -961,6 +975,90 @@ def _extract_plan_payload(planner_output: str, prompt: str) -> dict[str, object]
     return _fallback_execution_plan(prompt)
 
 
+def _fallback_route_decision(prompt: str) -> dict[str, object]:
+    normalized = str(prompt or "").strip().lower()
+
+    guideline_keywords = (
+        "ガイドライン", "規程", "規則", "ポリシー", "コンプライアンス", "出典", "根拠", "検索",
+        "regulation", "policy", "compliance", "citation", "cite", "reference", "search",
+    )
+    idobata_keywords = (
+        "経営", "役員", "ceo", "cto", "cfo", "coo", "投資計画", "事業計画", "実行計画", "ロードマップ", "kpi",
+        "board", "executive", "roadmap", "operating plan", "management plan",
+    )
+    multi_agent_keywords = (
+        "賛成", "反対", "比較", "批判", "肯定", "多角", "pros and cons", "trade-off", "compare", "comparison",
+        "critique", "analyze both", "multiple perspectives",
+    )
+
+    mode = MODE_GENERAL
+    reason = get_text('route_fallback_general', LANGUAGE)
+
+    if any(keyword in normalized for keyword in guideline_keywords) and _search_is_configured():
+        mode = MODE_GUIDELINE
+        reason = get_text('route_fallback_guideline', LANGUAGE)
+    elif any(keyword in normalized for keyword in idobata_keywords):
+        mode = MODE_IDOBATA
+        reason = get_text('route_fallback_idobata', LANGUAGE)
+    elif any(keyword in normalized for keyword in multi_agent_keywords):
+        mode = ROUTE_MODE_MULTI_AGENT
+        reason = get_text('route_fallback_multi_agent', LANGUAGE)
+
+    return {
+        "mode": mode,
+        "reason": reason,
+        "confidence": 0.45,
+        "fallback_used": True,
+    }
+
+
+def _normalize_route_decision(raw_decision: object, prompt: str) -> dict[str, object]:
+    fallback = _fallback_route_decision(prompt)
+    if not isinstance(raw_decision, dict):
+        return fallback
+
+    mode = str(raw_decision.get("mode", "")).strip().lower()
+    if mode not in ROUTE_ALLOWED_MODES:
+        return fallback
+
+    if mode == MODE_GUIDELINE and not _search_is_configured():
+        adjusted = dict(fallback)
+        adjusted["reason"] = get_text('route_fallback_search_unavailable', LANGUAGE)
+        return adjusted
+
+    reason = _compact_text(raw_decision.get("reason"), limit=220) or str(fallback["reason"])
+    try:
+        confidence = float(raw_decision.get("confidence", fallback["confidence"]))
+    except (TypeError, ValueError):
+        confidence = float(fallback["confidence"])
+
+    confidence = max(0.0, min(confidence, 1.0))
+    return {
+        "mode": mode,
+        "reason": reason,
+        "confidence": confidence,
+        "fallback_used": bool(raw_decision.get("fallback_used", False)),
+    }
+
+
+def _extract_route_payload(router_output: str, prompt: str) -> dict[str, object]:
+    router_output = (router_output or "").strip()
+    if not router_output:
+        return _fallback_route_decision(prompt)
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(router_output):
+        if char != "{":
+            continue
+        try:
+            raw_route, _ = decoder.raw_decode(router_output[index:])
+            return _normalize_route_decision(raw_route, prompt)
+        except json.JSONDecodeError:
+            continue
+
+    return _fallback_route_decision(prompt)
+
+
 async def build_prompt_with_history(prompt: str, mode: str, session_id: str) -> str:
     session = await session_store.get_session(mode, session_id)
     if session.thread.message_store is None:
@@ -1116,6 +1214,48 @@ async def generate_execution_plan(
         return _fallback_execution_plan(prompt)
 
 
+async def generate_route_decision(
+    prompt: str,
+    context_mode: str,
+    session_id: str,
+    model_name: str | None,
+    model_chat_client,
+) -> dict[str, object]:
+    router_agent = ChatAgent(
+        name="Router",
+        chat_client=model_chat_client,
+        instructions=get_text('agent_router_instructions', LANGUAGE),
+    )
+    router_prompt = await build_prompt_with_history(prompt, context_mode, session_id)
+
+    async def _run_router() -> dict[str, object]:
+        router_parts: list[str] = []
+        async for update in router_agent.run_stream(router_prompt):
+            if update.text:
+                router_parts.append(update.text)
+        return _extract_route_payload("".join(router_parts), prompt)
+
+    try:
+        decision = await asyncio.wait_for(_run_router(), timeout=ROUTE_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Router timed out after %.1fs for model '%s'. Falling back to heuristic routing.", ROUTE_TIMEOUT_SECONDS, model_name)
+        decision = _fallback_route_decision(prompt)
+    except Exception:
+        logger.exception("Router failed for model '%s'. Falling back to heuristic routing.", model_name)
+        decision = _fallback_route_decision(prompt)
+
+    logger.info(
+        get_text(
+            'log_route_decision',
+            LANGUAGE,
+            mode=decision["mode"],
+            confidence=f"{float(decision['confidence']):.2f}",
+            reason=decision["reason"],
+        )
+    )
+    return decision
+
+
 def search_tool(
     query: Annotated[str, Field(description="Search query")],
 ) -> str:
@@ -1223,6 +1363,7 @@ async def api_stream(request: Request):
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
     session_id = get_session_id(body)
+    context_mode = get_context_mode(body, MODE_GENERAL)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     
@@ -1239,15 +1380,15 @@ async def api_stream(request: Request):
             yield json.dumps({"type": "error", "message": get_text('error_config_missing', LANGUAGE)}, ensure_ascii=False) + "\n"
             return
 
-        session = await session_store.get_session(MODE_GENERAL, session_id)
+        session = await session_store.get_session(context_mode, session_id)
         async with session.lock:
             try:
                 yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
-                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_name, model_chat_client)
+                plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
                 agent_input = await build_agent_input(
                     prompt,
-                    MODE_GENERAL,
+                    context_mode,
                     session_id,
                     model_name,
                     include_history=True,
@@ -1278,7 +1419,7 @@ async def api_stream(request: Request):
                         response_parts.append(update.text)
                         yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
-                await append_session_exchange(MODE_GENERAL, session_id, prompt, "".join(response_parts).strip())
+                await append_session_exchange(context_mode, session_id, prompt, "".join(response_parts).strip())
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
@@ -1301,6 +1442,7 @@ async def api_guideline_stream(request: Request):
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
     session_id = get_session_id(body, "guideline")
+    context_mode = get_context_mode(body, MODE_GUIDELINE)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     
@@ -1317,16 +1459,16 @@ async def api_guideline_stream(request: Request):
             yield json.dumps({"type": "error", "message": get_text('error_config_missing', LANGUAGE)}, ensure_ascii=False) + "\n"
             return
 
-        session = await session_store.get_session(MODE_GUIDELINE, session_id)
+        session = await session_store.get_session(context_mode, session_id)
         async with session.lock:
             trace_token = SEARCH_TRACE_CONTEXT.set([])
             try:
                 yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
-                plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_name, model_chat_client)
+                plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
                 agent_input = await build_agent_input(
                     prompt,
-                    MODE_GUIDELINE,
+                    context_mode,
                     session_id,
                     model_name,
                     include_history=True,
@@ -1365,7 +1507,7 @@ async def api_guideline_stream(request: Request):
                 if evidence_items:
                     yield json.dumps({"type": "evidence", "evidence": evidence_items}, ensure_ascii=False) + "\n"
 
-                await append_session_exchange(MODE_GUIDELINE, session_id, prompt, "".join(response_parts).strip())
+                await append_session_exchange(context_mode, session_id, prompt, "".join(response_parts).strip())
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
@@ -1390,6 +1532,7 @@ async def multi_agent_stream(request: Request):
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
     session_id = get_session_id(body)
+    context_mode = get_context_mode(body, MODE_GENERAL)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     
@@ -1409,7 +1552,7 @@ async def multi_agent_stream(request: Request):
             ) + "\n"
             return
         
-        session = await session_store.get_session(MODE_GENERAL, session_id)
+        session = await session_store.get_session(context_mode, session_id)
         async with session.lock:
             # Create model-specific agents
             model_critical_agent = ChatAgent(
@@ -1439,12 +1582,12 @@ async def multi_agent_stream(request: Request):
 
                 workflow_prompt = await build_agent_input(
                     prompt,
-                    MODE_GENERAL,
+                    context_mode,
                     session_id,
                     model_name,
                     include_history=True,
                 )
-                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_name, model_chat_client)
+                plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
 
                 # Use ConcurrentBuilder to create parallel workflow
@@ -1527,7 +1670,7 @@ Positive perspective:
                     "Synthesis:\n"
                     f"{synthesis_text}"
                 )
-                await append_session_exchange(MODE_GENERAL, session_id, prompt, assistant_summary)
+                await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
 
                 synthesis_time = time.time() - synthesis_start
                 total_time = time.time() - start_time
@@ -1558,6 +1701,7 @@ async def phase1_planning_stream(request: Request):
     model_name = get_requested_model_name(body)
     tone = body.get("tone", "balanced")
     session_id = get_session_id(body, "idobata")
+    context_mode = get_context_mode(body, MODE_IDOBATA)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     logger.info(f"[{request_id}] {get_text('log_tone_setting', LANGUAGE, tone=tone)}")
@@ -1602,7 +1746,7 @@ async def phase1_planning_stream(request: Request):
                     return value
             return None
 
-        session = await session_store.get_session(MODE_IDOBATA, session_id)
+        session = await session_store.get_session(context_mode, session_id)
         async with session.lock:
             # AI Board Meeting: Create CxO agents
             logger.info(f"[{request_id}] {get_text('log_planning_agent_creating', LANGUAGE)}")
@@ -1718,12 +1862,12 @@ async def phase1_planning_stream(request: Request):
 
             workflow_prompt = await build_agent_input(
                 prompt,
-                MODE_IDOBATA,
+                context_mode,
                 session_id,
                 model_name,
                 include_history=True,
             )
-            plan = await generate_execution_plan(prompt, MODE_IDOBATA, session_id, model_name, model_chat_client)
+            plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
             yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
             workflow_exec_start = time.time()
             logger.info(f"[{request_id}] {get_text('log_board_workflow_start', LANGUAGE, length=len(prompt))}")
@@ -1782,7 +1926,7 @@ async def phase1_planning_stream(request: Request):
                 "COO:\n"
                 f"{''.join(board_notes['COO']).strip()}"
             )
-            await append_session_exchange(MODE_IDOBATA, session_id, prompt, assistant_summary)
+            await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
 
             total_time = time.time() - start_time
             workflow_time = time.time() - workflow_exec_start
@@ -1798,6 +1942,33 @@ async def get_models():
         "default_model": DEFAULT_MODEL_NAME,
         "models": get_model_metadata(),
     }
+
+
+@app.post("/api/route")
+async def route_request(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    model_name = get_requested_model_name(body)
+    session_id = get_session_id(body)
+    context_mode = get_context_mode(body, MODE_GENERAL)
+
+    if not prompt:
+        return JSONResponse({"error": "prompt required"}, status_code=400)
+
+    logger.info(get_text('log_route_request', LANGUAGE, model=model_name))
+
+    model_chat_client = get_chat_client_for_model(model_name)
+    if model_chat_client is None:
+        return JSONResponse({"error": get_text('error_config_missing', LANGUAGE)}, status_code=400)
+
+    decision = await generate_route_decision(
+        prompt,
+        context_mode,
+        session_id,
+        model_name,
+        model_chat_client,
+    )
+    return decision
 
 
 @app.get("/api/files")

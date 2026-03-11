@@ -35,6 +35,7 @@ Work is being implemented in priority order. As of March 11, 2026, the status is
 | Tool trace and evidence view | Implemented (RAG-first) | RAG search now shows search traces and document evidence separately from the answer |
 | File input support | Implemented | Each mode can attach `.txt/.md/.csv/.json/.pdf/.docx/.png/.jpg/.jpeg/.webp/.gif` files and use them as text context or multimodal input |
 | Persistent memory | Implemented (JSON-first) | The backend persists `AgentThread` plus attachment metadata, the frontend persists rendered history, and `podman-compose` keeps both via named volumes |
+| Agent routing | Implemented | Auto Route from the general chat screen selects the best workflow while reusing general-session history and attachments |
 
 That means the next step is not "can it answer?", but "can it plan, act, explain, and be governed?"
 

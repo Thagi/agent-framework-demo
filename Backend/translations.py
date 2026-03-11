@@ -22,6 +22,30 @@ translations = {
         """,
         # エージェントインストラクション - 通常アシスタント
         'agent_simple_instructions': "あなたは親切なアシスタントです。質問に簡潔に答えてください。",
+        'agent_router_instructions': """
+あなたはルーティング専用の Router Agent です。
+ユーザーの最新の依頼を読み、次の 4 つの mode から 1 つだけ選んで JSON だけを返してください。
+
+選択可能な mode:
+- general
+- guideline
+- multi_agent
+- idobata
+
+判断基準:
+- general: 通常の単発QA、要約、説明、文章作成、雑多な相談
+- guideline: 検索・参照・出典・規程・ガイドライン・根拠が必要な質問
+- multi_agent: 賛否比較、トレードオフ検討、複数視点での分析が有効な質問
+- idobata: 経営テーマ、CxO視点、実行計画、ロードマップ、KPI、投資判断が必要な相談
+
+出力ルール:
+- JSON 以外の文字を書かない
+- keys は mode, reason, confidence を必ず含める
+- mode は 4 つの候補のいずれか
+- reason は 1 文で簡潔に書く
+- confidence は 0.0 から 1.0 の数値
+- 会話履歴や添付文書が関連する場合は判断に反映する
+""",
         'agent_planner_instructions': """
 あなたは回答前に実行計画だけを作る Planner Agent です。
 最終回答はまだ生成せず、短い実行計画を JSON だけで返してください。
@@ -243,6 +267,11 @@ PLAN_READY: 上記プランで実行準備完了
         'upload_error_no_text': "{filename} から読み取れるテキストが見つかりませんでした。",
         'upload_error_file_not_found': "指定された添付ファイルが見つかりませんでした。",
         'upload_error_multimodal_model_required': "{files} を扱うには、PDF/画像入力に対応したモデルが必要です。現在のモデル: {model}",
+        'route_fallback_general': "通常の対話で扱うのが適切な依頼です。",
+        'route_fallback_guideline': "検索や参照根拠が必要な依頼と判断しました。",
+        'route_fallback_multi_agent': "賛否や多面的な観点での分析が有効な依頼と判断しました。",
+        'route_fallback_idobata': "経営計画や役員視点の議論が適した依頼と判断しました。",
+        'route_fallback_search_unavailable': "検索設定が未構成のため、通常チャットへフォールバックしました。",
         'plan_fallback_goal': "ユーザーの依頼に答える",
         'plan_fallback_step_label': "対応ステップ",
         'plan_fallback_tool_label': "利用手段",
@@ -264,6 +293,8 @@ PLAN_READY: 上記プランで実行準備完了
         # ログメッセージ
         'log_request_received': "⏱️ リクエスト受信",
         'log_request_parsed': "⏱️ リクエスト解析完了 ({time}ms)",
+        'log_route_request': "🧭 ルーティング判定開始 (model={model})",
+        'log_route_decision': "🧭 ルーティング決定: mode={mode}, confidence={confidence}, reason={reason}",
         'log_model_selected': "🧠 モデル選択: {model} -> {provider}: {target}",
         'log_model_info': "🧠 model={model}",
         'log_agent_creating': "🤖 エージェント作成開始",
@@ -329,6 +360,28 @@ Integrate both perspectives and draw practical conclusions.
         """,
         # Agent Instructions - Simple Assistant
         'agent_simple_instructions': "You are a helpful assistant. Answer questions concisely.",
+        'agent_router_instructions': """
+You are a router agent. Read the latest user request and return JSON only.
+
+You must choose exactly one mode from:
+- general
+- guideline
+- multi_agent
+- idobata
+
+Routing criteria:
+- general: standard Q&A, explanation, writing help, summarization, broad discussion
+- guideline: requests that need search, references, citations, policies, regulations, or grounded evidence
+- multi_agent: requests that benefit from pros/cons, trade-off analysis, or multiple viewpoints
+- idobata: management themes, executive planning, KPI design, roadmaps, investment decisions, or CxO-style discussion
+
+Output rules:
+- Return JSON only
+- Always include mode, reason, confidence
+- reason must be one concise sentence
+- confidence must be a number between 0.0 and 1.0
+- Use conversation history and uploaded documents when they are relevant to routing
+""",
         'agent_planner_instructions': """
 You are a planner agent that produces only an execution plan before the final answer.
 Do not answer the user yet. Return JSON only.
@@ -549,6 +602,11 @@ Present a concrete executable plan.""",
         'upload_error_no_text': "No readable text was found in {filename}.",
         'upload_error_file_not_found': "The requested uploaded file was not found.",
         'upload_error_multimodal_model_required': "A model that supports PDF/image inputs is required for {files}. Current model: {model}",
+        'route_fallback_general': "This request is best handled as a general chat task.",
+        'route_fallback_guideline': "This request appears to need search-backed or policy-grounded answers.",
+        'route_fallback_multi_agent': "This request appears to benefit from multi-perspective analysis.",
+        'route_fallback_idobata': "This request appears to need executive planning or board-style discussion.",
+        'route_fallback_search_unavailable': "Search is not configured, so the request fell back to general chat.",
         'plan_fallback_goal': "Address the user's request",
         'plan_fallback_step_label': "Step",
         'plan_fallback_tool_label': "Tool",
@@ -570,6 +628,8 @@ Present a concrete executable plan.""",
         # Log Messages
         'log_request_received': "⏱️ Request received",
         'log_request_parsed': "⏱️ Request parsed ({time}ms)",
+        'log_route_request': "🧭 Route decision started (model={model})",
+        'log_route_decision': "🧭 Route decision: mode={mode}, confidence={confidence}, reason={reason}",
         'log_model_selected': "🧠 Model selected: {model} -> {provider}: {target}",
         'log_model_info': "🧠 model={model}",
         'log_agent_creating': "🤖 Creating agent",

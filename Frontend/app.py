@@ -22,6 +22,7 @@ app = Flask(__name__)
 app.config['BACKEND_URL'] = os.getenv('BACKEND_URL', 'http://localhost:8000')
 app.config['LANGUAGE'] = os.getenv('LANGUAGE', 'ja')
 STREAMING_PROXY_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=60.0)
+ROUTE_PROXY_TIMEOUT = 20.0
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -70,6 +71,23 @@ def _append_message(session_id: str, message: dict) -> None:
         messages_store[session_id] = _load_persisted_messages(session_id)
     messages_store[session_id].append(message)
     _persist_messages(session_id)
+
+
+def _extract_route_metadata(data: dict) -> dict:
+    route_mode = str(data.get('route_mode', '') or '').strip()
+    route_reason = str(data.get('route_reason', '') or '').strip()
+    route_confidence = data.get('route_confidence')
+    try:
+        route_confidence = float(route_confidence) if route_confidence is not None else None
+    except (TypeError, ValueError):
+        route_confidence = None
+    if not route_mode and not route_reason and route_confidence is None:
+        return {}
+    return {
+        'route_mode': route_mode or None,
+        'route_reason': route_reason or None,
+        'route_confidence': route_confidence,
+    }
 
 
 FRONT_TEXT = {
@@ -257,6 +275,9 @@ def chat_stream():
     prompt = data.get('prompt', '')
     session_id = data.get('session_id', 'default')
     model = data.get('model', 'gpt-4.1-mini')
+    context_mode = data.get('context_mode')
+    stored_user_content = data.get('stored_user_content') or prompt
+    route_metadata = _extract_route_metadata(data)
     
     logger.info(f"[{request_id}] {front_text('log_front_request_received', model=model)}")
     
@@ -266,7 +287,7 @@ def chat_stream():
     # Save user message
     user_message = {
         'is_user': True,
-        'content': prompt,
+        'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
     _append_message(session_id, user_message)
@@ -282,7 +303,12 @@ def chat_stream():
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/stream",
-                    json={'prompt': prompt, 'model': model, 'session_id': session_id}
+                    json={k: v for k, v in {
+                        'prompt': prompt,
+                        'model': model,
+                        'session_id': session_id,
+                        'context_mode': context_mode,
+                    }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
                     first_chunk = True
@@ -320,6 +346,7 @@ def chat_stream():
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
+            ai_message.update(route_metadata)
             _append_message(session_id, ai_message)
             
         except Exception as e:
@@ -333,6 +360,7 @@ def chat_stream():
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
+            ai_message.update(route_metadata)
             _append_message(session_id, ai_message)
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
@@ -346,6 +374,9 @@ def guideline_stream():
     prompt = data.get('prompt', '')
     model = data.get('model', 'gpt-4.1-mini')
     session_id = data.get('session_id', 'guideline')
+    context_mode = data.get('context_mode')
+    stored_user_content = data.get('stored_user_content') or prompt
+    route_metadata = _extract_route_metadata(data)
 
     logger.info(front_text('log_front_guideline_request', model=model))
     
@@ -354,7 +385,7 @@ def guideline_stream():
 
     user_message = {
         'is_user': True,
-        'content': prompt,
+        'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
     _append_message(session_id, user_message)
@@ -370,7 +401,12 @@ def guideline_stream():
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/rag/stream",
-                    json={'prompt': prompt, 'model': model, 'session_id': session_id}
+                    json={k: v for k, v in {
+                        'prompt': prompt,
+                        'model': model,
+                        'session_id': session_id,
+                        'context_mode': context_mode,
+                    }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
@@ -401,7 +437,7 @@ def guideline_stream():
                     'evidence': evidence_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
-                }
+                } | route_metadata
             )
             
         except Exception as e:
@@ -416,7 +452,7 @@ def guideline_stream():
                     'evidence': evidence_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
-                }
+                } | route_metadata
             )
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
@@ -432,6 +468,9 @@ def multi_agent_stream():
     prompt = data.get('prompt', '')
     session_id = data.get('session_id', 'default')
     model = data.get('model', 'gpt-4.1-mini')
+    context_mode = data.get('context_mode')
+    stored_user_content = data.get('stored_user_content') or f"{front_text('label_multi_agent')} {prompt}"
+    route_metadata = _extract_route_metadata(data)
     
     logger.info(f"[{request_id}] {front_text('log_front_multi_request_received', model=model)}")
     
@@ -441,7 +480,7 @@ def multi_agent_stream():
     # Save user message
     user_message = {
         'is_user': True,
-        'content': f"{front_text('label_multi_agent')} {prompt}",
+        'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
     _append_message(session_id, user_message)
@@ -467,7 +506,12 @@ def multi_agent_stream():
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/multi-agent-stream",
-                    json={'prompt': prompt, 'model': model, 'session_id': session_id}
+                    json={k: v for k, v in {
+                        'prompt': prompt,
+                        'model': model,
+                        'session_id': session_id,
+                        'context_mode': context_mode,
+                    }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
@@ -505,6 +549,7 @@ def multi_agent_stream():
             )
             
             # Save AI message
+            ai_message.update(route_metadata)
             _append_message(session_id, ai_message)
             
         except Exception as e:
@@ -512,6 +557,7 @@ def multi_agent_stream():
             yield json.dumps(error_data) + '\n'
             
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
+            ai_message.update(route_metadata)
             _append_message(session_id, ai_message)
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
@@ -528,6 +574,9 @@ def idobata_stream():
     session_id = data.get('session_id', 'idobata')
     model = data.get('model', 'gpt-4.1-mini')
     tone = data.get('tone', 'balanced')
+    context_mode = data.get('context_mode')
+    stored_user_content = data.get('stored_user_content') or f"{front_text('label_idobata')} {prompt}"
+    route_metadata = _extract_route_metadata(data)
 
     logger.info(
         f"[{request_id}] {front_text('log_front_board_request_received', model=model, tone=tone)}"
@@ -538,7 +587,7 @@ def idobata_stream():
 
     user_message = {
         'is_user': True,
-        'content': f"{front_text('label_idobata')} {prompt}",
+        'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
     _append_message(session_id, user_message)
@@ -566,7 +615,13 @@ def idobata_stream():
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/phase1/stream",
-                    json={'prompt': prompt, 'model': model, 'tone': tone, 'session_id': session_id}
+                    json={k: v for k, v in {
+                        'prompt': prompt,
+                        'model': model,
+                        'tone': tone,
+                        'session_id': session_id,
+                        'context_mode': context_mode,
+                    }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
                     for line in response.iter_lines():
@@ -604,6 +659,7 @@ def idobata_stream():
                 f"[{request_id}] {front_text('log_front_completed_lines', s=f'{total_time:.2f}', count=line_count)}"
             )
 
+            ai_message.update(route_metadata)
             _append_message(session_id, ai_message)
 
         except Exception as e:
@@ -611,9 +667,44 @@ def idobata_stream():
             yield json.dumps(error_data) + '\n'
 
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
+            ai_message.update(route_metadata)
             _append_message(session_id, ai_message)
 
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
+
+
+@app.route('/api/chat/route', methods=['POST'])
+def chat_route():
+    data = request.json
+    prompt = data.get('prompt', '')
+    session_id = data.get('session_id', 'default')
+    model = data.get('model', 'gpt-4.1-mini')
+    context_mode = data.get('context_mode', 'general')
+
+    if not prompt:
+        return jsonify({'error': 'prompt required'}), 400
+
+    try:
+        with httpx.Client(timeout=ROUTE_PROXY_TIMEOUT) as client:
+            response = client.post(
+                f"{app.config['BACKEND_URL']}/api/route",
+                json={
+                    'prompt': prompt,
+                    'model': model,
+                    'session_id': session_id,
+                    'context_mode': context_mode,
+                },
+            )
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.warning("Auto route failed. Falling back to general chat: %s", exc)
+        return jsonify({
+            'mode': 'general',
+            'reason': str(exc),
+            'confidence': 0.0,
+            'fallback_used': True,
+        })
 
 
 if __name__ == '__main__':
