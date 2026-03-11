@@ -3,10 +3,12 @@ import re
 import time
 import json
 import logging
+from io import BytesIO
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional, Any
-from fastapi import FastAPI, Request
+from uuid import uuid4
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -20,7 +22,7 @@ from pydantic import Field
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.models import QueryType
-from session_state import SessionStore
+from session_state import SessionStore, UploadedDocument
 from translations import get_text
 
 load_dotenv()
@@ -68,6 +70,19 @@ MODE_IDOBATA = "idobata"
 session_store = SessionStore(max_messages=SESSION_HISTORY_MESSAGES)
 SEARCH_EXCERPT_LIMIT = max(int(os.getenv("SEARCH_EXCERPT_LIMIT", "280")), 80)
 SEARCH_TRACE_CONTEXT: ContextVar[list[dict[str, Any]] | None] = ContextVar("search_trace_context", default=None)
+MAX_UPLOAD_FILES = max(int(os.getenv("MAX_UPLOAD_FILES", "5")), 1)
+MAX_UPLOAD_FILE_SIZE_BYTES = max(int(os.getenv("MAX_UPLOAD_FILE_SIZE_BYTES", "5242880")), 1024)
+MAX_UPLOAD_TEXT_CHARS = max(int(os.getenv("MAX_UPLOAD_TEXT_CHARS", "12000")), 1000)
+MAX_PROMPT_DOCUMENT_CHARS = max(int(os.getenv("MAX_PROMPT_DOCUMENT_CHARS", "8000")), 1000)
+
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".txt",
+    ".md",
+    ".csv",
+    ".json",
+    ".pdf",
+    ".docx",
+}
 
 MODEL_LABEL_DEFAULTS = {
     "gpt-4.1": "GPT-4.1",
@@ -521,6 +536,81 @@ def _collect_evidence_from_traces(traces: list[dict[str, Any]]) -> list[dict[str
     return evidence_items
 
 
+def _guess_upload_extension(filename: str) -> str:
+    _, extension = os.path.splitext(filename or "")
+    return extension.lower()
+
+
+def _decode_text_bytes(data: bytes) -> str:
+    for encoding in ("utf-8", "utf-8-sig", "cp932", "latin-1"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="ignore")
+
+
+def _extract_document_text(filename: str, data: bytes) -> str:
+    extension = _guess_upload_extension(filename)
+
+    if extension in {".txt", ".md", ".csv", ".json"}:
+        return _decode_text_bytes(data)
+
+    if extension == ".pdf":
+        from pypdf import PdfReader
+        reader = PdfReader(BytesIO(data))
+        pages = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text.strip():
+                pages.append(page_text)
+        return "\n\n".join(pages)
+
+    if extension == ".docx":
+        from docx import Document
+        document = Document(BytesIO(data))
+        paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
+        return "\n".join(paragraphs)
+
+    raise ValueError(get_text('upload_error_unsupported_type', LANGUAGE, filename=filename))
+
+
+def _document_metadata(document: UploadedDocument) -> dict[str, Any]:
+    return {
+        "id": document.file_id,
+        "name": document.name,
+        "content_type": document.content_type,
+        "size_bytes": document.size_bytes,
+        "preview_text": document.preview_text,
+        "text_length": len(document.extracted_text),
+    }
+
+
+def _format_uploaded_documents(documents: list[UploadedDocument]) -> str:
+    if not documents:
+        return ""
+
+    parts: list[str] = []
+    remaining_chars = MAX_PROMPT_DOCUMENT_CHARS
+    for index, document in enumerate(documents, start=1):
+        if remaining_chars <= 0:
+            break
+        available_chars = max(200, remaining_chars)
+        excerpt = document.extracted_text[:available_chars].strip()
+        if not excerpt:
+            continue
+        if len(document.extracted_text) > len(excerpt):
+            excerpt = f"{excerpt}\n...[truncated]"
+        block = f"[Document {index}] {document.name}\n{excerpt}"
+        parts.append(block)
+        remaining_chars -= len(excerpt)
+
+    if not parts:
+        return ""
+
+    return "Uploaded session documents:\n\n" + "\n\n".join(parts)
+
+
 def _normalize_plan_items(values: object, *, max_items: int, fallback_prefix: str) -> list[str]:
     candidates: list[object]
     if isinstance(values, list):
@@ -613,17 +703,43 @@ def _extract_plan_payload(planner_output: str, prompt: str) -> dict[str, object]
 async def build_prompt_with_history(prompt: str, mode: str, session_id: str) -> str:
     session = await session_store.get_session(mode, session_id)
     if session.thread.message_store is None:
+        history_block = ""
+    else:
+        history_messages = await session.thread.message_store.list_messages()
+        history_block = _format_history_messages(history_messages[-PROMPT_HISTORY_MESSAGES:])
+
+    document_block = _format_uploaded_documents(session.uploaded_documents)
+    if not history_block and not document_block:
         return prompt
 
-    history_messages = await session.thread.message_store.list_messages()
-    history_block = _format_history_messages(history_messages[-PROMPT_HISTORY_MESSAGES:])
-    if not history_block:
+    sections = []
+    if history_block:
+        sections.append(
+            "Use the relevant information from the prior conversation when responding. "
+            "If the history is not relevant, prioritize the latest request.\n\n"
+            f"Conversation history:\n{history_block}"
+        )
+    if document_block:
+        sections.append(
+            "Use the uploaded documents when they are relevant to the latest request. "
+            "If they are not relevant, do not force them into the answer.\n\n"
+            f"{document_block}"
+        )
+
+    sections.append(f"Latest user request:\n{prompt}")
+    return "\n\n".join(sections)
+
+
+async def build_prompt_with_documents(prompt: str, mode: str, session_id: str) -> str:
+    session = await session_store.get_session(mode, session_id)
+    document_block = _format_uploaded_documents(session.uploaded_documents)
+    if not document_block:
         return prompt
 
     return (
-        "Use the relevant information from the prior conversation when responding. "
-        "If the history is not relevant, prioritize the latest request.\n\n"
-        f"Conversation history:\n{history_block}\n\n"
+        "Use the uploaded documents when they are relevant to the latest request. "
+        "If they are not relevant, do not force them into the answer.\n\n"
+        f"{document_block}\n\n"
         f"Latest user request:\n{prompt}"
     )
 
@@ -789,6 +905,7 @@ async def api_stream(request: Request):
             try:
                 plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
+                prompt_with_documents = await build_prompt_with_documents(prompt, MODE_GENERAL, session_id)
 
                 # Create a simple agent
                 agent_start = time.time()
@@ -805,7 +922,7 @@ async def api_stream(request: Request):
                 logger.info(f"[{request_id}] {get_text('log_streaming_start', LANGUAGE, length=len(prompt))}")
                 first_chunk = True
                 chunk_count = 0
-                async for update in simple_agent.run_stream(prompt, thread=session.thread):
+                async for update in simple_agent.run_stream(prompt_with_documents, thread=session.thread):
                     if update.text:
                         if first_chunk:
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
@@ -857,6 +974,7 @@ async def api_guideline_stream(request: Request):
             try:
                 plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
+                prompt_with_documents = await build_prompt_with_documents(prompt, MODE_GUIDELINE, session_id)
 
                 # Agent using Azure AI Search tool
                 agent_start = time.time()
@@ -873,7 +991,7 @@ async def api_guideline_stream(request: Request):
                 logger.info(f"[{request_id}] {get_text('log_streaming_start', LANGUAGE, length=len(prompt))}")
                 first_chunk = True
                 chunk_count = 0
-                async for update in search_agent.run_stream(prompt, thread=session.thread):
+                async for update in search_agent.run_stream(prompt_with_documents, thread=session.thread):
                     if update.text:
                         if first_chunk:
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
@@ -1309,6 +1427,98 @@ async def get_models():
         "default_model": DEFAULT_MODEL_NAME,
         "models": get_model_metadata(),
     }
+
+
+@app.get("/api/files")
+async def list_uploaded_files(session_id: str = "default", mode: str = MODE_GENERAL):
+    session = await session_store.get_session(mode, session_id)
+    async with session.lock:
+        return {"files": [_document_metadata(document) for document in session.uploaded_documents]}
+
+
+@app.post("/api/files")
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    session_id: str = Form("default"),
+    mode: str = Form(MODE_GENERAL),
+):
+    if not files:
+        return JSONResponse({"error": get_text('upload_error_missing_files', LANGUAGE)}, status_code=400)
+
+    session = await session_store.get_session(mode, session_id)
+    async with session.lock:
+        if len(session.uploaded_documents) + len(files) > MAX_UPLOAD_FILES:
+            return JSONResponse(
+                {"error": get_text('upload_error_too_many_files', LANGUAGE, limit=MAX_UPLOAD_FILES)},
+                status_code=400,
+            )
+
+        uploaded: list[dict[str, Any]] = []
+        for upload in files:
+            filename = upload.filename or "uploaded-file"
+            extension = _guess_upload_extension(filename)
+            if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+                return JSONResponse(
+                    {"error": get_text('upload_error_unsupported_type', LANGUAGE, filename=filename)},
+                    status_code=400,
+                )
+
+            data = await upload.read()
+            if len(data) > MAX_UPLOAD_FILE_SIZE_BYTES:
+                return JSONResponse(
+                    {
+                        "error": get_text(
+                            'upload_error_file_too_large',
+                            LANGUAGE,
+                            filename=filename,
+                            limit_mb=f"{MAX_UPLOAD_FILE_SIZE_BYTES / (1024 * 1024):.1f}",
+                        )
+                    },
+                    status_code=400,
+                )
+
+            try:
+                extracted_text = _extract_document_text(filename, data)
+            except Exception as exc:
+                return JSONResponse({"error": str(exc)}, status_code=400)
+
+            normalized_text = extracted_text.strip()
+            if not normalized_text:
+                return JSONResponse(
+                    {"error": get_text('upload_error_no_text', LANGUAGE, filename=filename)},
+                    status_code=400,
+                )
+
+            normalized_text = normalized_text[:MAX_UPLOAD_TEXT_CHARS]
+            document = UploadedDocument(
+                file_id=uuid4().hex,
+                name=filename,
+                content_type=upload.content_type or "application/octet-stream",
+                size_bytes=len(data),
+                extracted_text=normalized_text,
+                preview_text=_compact_text(normalized_text, limit=220),
+            )
+            session.uploaded_documents.append(document)
+            uploaded.append(_document_metadata(document))
+
+        return {
+            "files": uploaded,
+            "all_files": [_document_metadata(document) for document in session.uploaded_documents],
+        }
+
+
+@app.delete("/api/files/{file_id}")
+async def delete_uploaded_file(file_id: str, session_id: str = "default", mode: str = MODE_GENERAL):
+    session = await session_store.get_session(mode, session_id)
+    async with session.lock:
+        before_count = len(session.uploaded_documents)
+        session.uploaded_documents = [
+            document for document in session.uploaded_documents if document.file_id != file_id
+        ]
+        if len(session.uploaded_documents) == before_count:
+            return JSONResponse({"error": get_text('upload_error_file_not_found', LANGUAGE)}, status_code=404)
+
+        return {"status": "ok", "files": [_document_metadata(document) for document in session.uploaded_documents]}
 
 
 @app.post("/api/sessions/clear")

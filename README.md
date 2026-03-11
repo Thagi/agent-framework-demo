@@ -18,6 +18,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Plan visualization**: Each mode shows goal / steps / tools / completion criteria before the answer streams
 - **Approval flow**: Multi-agent analysis, the board workflow, and approval-gated models require `approve / reject / revise` before execution
 - **Execution trace and evidence view**: RAG search shows query, hit count, duration, and supporting document excerpts separately from the answer
+- **File input support**: Attach `.txt / .md / .csv / .json / .pdf / .docx` files in each mode and use them as session context
 - **Model selection**: The frontend receives the available model list and provider metadata from the backend, so selectable models stay aligned with backend configuration
 - **Conversation memory**: The Backend keeps per-session history with Agent Framework `AgentThread`, and the Frontend re-renders server-side message history on reload
 
@@ -152,6 +153,14 @@ LANGUAGE=en
 ```
 
 Note: the Backend reads `LANGUAGE` at startup, so you need to restart the Backend to apply changes.
+
+File input limits:
+
+- Supported types: `.txt`, `.md`, `.csv`, `.json`, `.pdf`, `.docx`
+- Max attachments per session: `MAX_UPLOAD_FILES`
+- Max size per file: `MAX_UPLOAD_FILE_SIZE_BYTES`
+- Max extracted text retained per file: `MAX_UPLOAD_TEXT_CHARS`
+- Max attached text injected into prompts: `MAX_PROMPT_DOCUMENT_CHARS`
 
 (Optional) Legacy Azure-only env formats are still supported as fallbacks for existing setups:
 

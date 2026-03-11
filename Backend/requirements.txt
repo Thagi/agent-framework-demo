@@ -10,6 +10,9 @@ uvicorn[standard]
 
 # Environment variables
 python-dotenv
+python-multipart
+pypdf
+python-docx
 
 # Azure authentication
 azure-identity

@@ -18,6 +18,7 @@
 - **計画可視化**: 各モードで回答前の goal / steps / tools / completion criteria を表示
 - **承認フロー**: マルチエージェント分析 / AI役員会議 / 承認対象モデルの実行前に `approve / reject / revise` を要求
 - **実行ログと根拠表示**: RAG検索で検索語・結果件数・所要時間・参照文書の抜粋を回答と分離して表示
+- **ファイル入力対応**: `.txt / .md / .csv / .json / .pdf / .docx` を各モードへ添付し、セッション文脈として回答に反映
 - **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`で会話履歴を保持し、Frontendもサーバーメモリ上の履歴を再描画
 
@@ -153,6 +154,14 @@ LANGUAGE=en
 ```
 
 ※Backendは起動時に`LANGUAGE`を読み込むため、変更後はBackendの再起動が必要です。
+
+ファイル入力の制限:
+
+- 対応形式: `.txt`, `.md`, `.csv`, `.json`, `.pdf`, `.docx`
+- セッションごとの最大添付数: `MAX_UPLOAD_FILES`
+- 1ファイルあたりの最大サイズ: `MAX_UPLOAD_FILE_SIZE_BYTES`
+- 抽出テキストの保持上限: `MAX_UPLOAD_TEXT_CHARS`
+- プロンプトへ注入する添付テキスト上限: `MAX_PROMPT_DOCUMENT_CHARS`
 
 （任意）既存環境向けの Azure 専用旧形式 env もフォールバックとして引き続き利用できます:
 

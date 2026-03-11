@@ -7,6 +7,9 @@ let messagesIdobata = [];
 let currentMode = 'general'; // 'general' or 'guideline' or 'idobata'
 let availableModels = [];
 let defaultModelId = null;
+let attachments = [];
+let attachmentsGuideline = [];
+let attachmentsIdobata = [];
 const sessionId = 'default';
 const sessionIdGuideline = 'guideline';
 const sessionIdIdobata = 'idobata';
@@ -21,6 +24,9 @@ const clearButton = document.getElementById('clearButton');
 const statusIndicator = document.getElementById('statusIndicator');
 const statusText = document.getElementById('statusText');
 const modelSelect = document.getElementById('modelSelect');
+const attachButton = document.getElementById('attachButton');
+const fileInput = document.getElementById('fileInput');
+const attachmentList = document.getElementById('attachmentList');
 
 // DOM elements - guideline chat
 const chatMessagesGuideline = document.getElementById('chatMessagesGuideline');
@@ -31,6 +37,9 @@ const clearButtonGuideline = document.getElementById('clearButtonGuideline');
 const statusIndicatorGuideline = document.getElementById('statusIndicatorGuideline');
 const statusTextGuideline = document.getElementById('statusTextGuideline');
 const modelSelectGuideline = document.getElementById('modelSelectGuideline');
+const attachButtonGuideline = document.getElementById('attachButtonGuideline');
+const fileInputGuideline = document.getElementById('fileInputGuideline');
+const attachmentListGuideline = document.getElementById('attachmentListGuideline');
 
 // DOM elements - AI board meeting
 const chatMessagesIdobata = document.getElementById('chatMessagesIdobata');
@@ -42,6 +51,9 @@ const statusIndicatorIdobata = document.getElementById('statusIndicatorIdobata')
 const statusTextIdobata = document.getElementById('statusTextIdobata');
 const modelSelectIdobata = document.getElementById('modelSelectIdobata');
 const toneSelectIdobata = document.getElementById('toneSelectIdobata');
+const attachButtonIdobata = document.getElementById('attachButtonIdobata');
+const fileInputIdobata = document.getElementById('fileInputIdobata');
+const attachmentListIdobata = document.getElementById('attachmentListIdobata');
 
 // Settings toggles (responsive only: CSS hides on desktop)
 const settingsButtonGeneral = document.getElementById('settingsButtonGeneral');
@@ -61,6 +73,48 @@ const approvalApproveButton = document.getElementById('approvalApproveButton');
 const approvalRejectButton = document.getElementById('approvalRejectButton');
 const approvalReviseButton = document.getElementById('approvalReviseButton');
 let approvalResolver = null;
+
+const attachmentContexts = {
+    general: {
+        mode: 'general',
+        sessionId,
+        input: fileInput,
+        button: attachButton,
+        list: attachmentList,
+        get items() {
+            return attachments;
+        },
+        set items(value) {
+            attachments = value;
+        }
+    },
+    guideline: {
+        mode: 'guideline',
+        sessionId: sessionIdGuideline,
+        input: fileInputGuideline,
+        button: attachButtonGuideline,
+        list: attachmentListGuideline,
+        get items() {
+            return attachmentsGuideline;
+        },
+        set items(value) {
+            attachmentsGuideline = value;
+        }
+    },
+    idobata: {
+        mode: 'idobata',
+        sessionId: sessionIdIdobata,
+        input: fileInputIdobata,
+        button: attachButtonIdobata,
+        list: attachmentListIdobata,
+        get items() {
+            return attachmentsIdobata;
+        },
+        set items(value) {
+            attachmentsIdobata = value;
+        }
+    }
+};
 
 function setModelSelectPlaceholder(label) {
     modelSelects.forEach(select => {
@@ -85,6 +139,149 @@ function tf(key, values = {}) {
 
 function findModelDefinition(modelId) {
     return availableModels.find(model => model.id === modelId) || null;
+}
+
+function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function normalizeAttachment(item) {
+    if (!item || typeof item !== 'object') {
+        return null;
+    }
+
+    const id = typeof item.id === 'string' ? item.id : '';
+    const name = typeof item.name === 'string' ? item.name : '';
+    if (!id || !name) {
+        return null;
+    }
+
+    return {
+        id,
+        name,
+        content_type: typeof item.content_type === 'string' ? item.content_type : '',
+        size_bytes: Number.isFinite(item.size_bytes) ? item.size_bytes : 0,
+        preview_text: typeof item.preview_text === 'string' ? item.preview_text : '',
+        text_length: Number.isFinite(item.text_length) ? item.text_length : 0
+    };
+}
+
+function renderAttachmentList(context) {
+    if (!context.list) return;
+    context.list.innerHTML = '';
+
+    context.items.forEach(item => {
+        const chip = document.createElement('div');
+        chip.className = 'attachment-chip';
+
+        const main = document.createElement('div');
+        main.className = 'attachment-chip-main';
+
+        const name = document.createElement('div');
+        name.className = 'attachment-chip-name';
+        name.textContent = item.name;
+
+        const meta = document.createElement('div');
+        meta.className = 'attachment-chip-meta';
+        meta.textContent = `${formatBytes(item.size_bytes)} / ${item.text_length} chars`;
+
+        main.appendChild(name);
+        main.appendChild(meta);
+
+        if (item.preview_text) {
+            const preview = document.createElement('div');
+            preview.className = 'attachment-chip-preview';
+            preview.textContent = item.preview_text;
+            main.appendChild(preview);
+        }
+
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'attachment-chip-remove';
+        remove.title = t('attachment_remove');
+        remove.setAttribute('aria-label', t('attachment_remove'));
+        remove.innerHTML = '<i class="fas fa-xmark"></i>';
+        remove.addEventListener('click', () => removeAttachment(context.mode, item.id));
+
+        chip.appendChild(main);
+        chip.appendChild(remove);
+        context.list.appendChild(chip);
+    });
+}
+
+async function loadAttachments(mode) {
+    const context = attachmentContexts[mode];
+    if (!context) return;
+
+    try {
+        const response = await fetch(`/api/files?session_id=${encodeURIComponent(context.sessionId)}&mode=${encodeURIComponent(mode)}`);
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        context.items = Array.isArray(payload.files) ? payload.files.map(normalizeAttachment).filter(Boolean) : [];
+    } catch (error) {
+        console.error('Attachment load error:', error);
+        context.items = [];
+    }
+
+    renderAttachmentList(context);
+}
+
+async function uploadSelectedFiles(mode) {
+    const context = attachmentContexts[mode];
+    if (!context || !context.input || !context.input.files || context.input.files.length === 0) {
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('session_id', context.sessionId);
+    formData.append('mode', mode);
+    Array.from(context.input.files).forEach(file => {
+        formData.append('files', file);
+    });
+
+    try {
+        const response = await fetch('/api/files', {
+            method: 'POST',
+            body: formData
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+
+        context.items = Array.isArray(payload.all_files) ? payload.all_files.map(normalizeAttachment).filter(Boolean) : context.items;
+        renderAttachmentList(context);
+    } catch (error) {
+        alert(error.message);
+    } finally {
+        context.input.value = '';
+    }
+}
+
+async function removeAttachment(mode, fileId) {
+    const context = attachmentContexts[mode];
+    if (!context || !fileId) return;
+
+    try {
+        const response = await fetch(
+            `/api/files/${encodeURIComponent(fileId)}?session_id=${encodeURIComponent(context.sessionId)}&mode=${encodeURIComponent(mode)}`,
+            { method: 'DELETE' }
+        );
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+
+        context.items = Array.isArray(payload.files) ? payload.files.map(normalizeAttachment).filter(Boolean) : [];
+        renderAttachmentList(context);
+    } catch (error) {
+        alert(error.message);
+    }
 }
 
 function renderModelSelects() {
@@ -133,6 +330,17 @@ function renderModelSelects() {
     updateButtonsIdobata();
 }
 
+function updateAttachmentButtons() {
+    Object.values(attachmentContexts).forEach(context => {
+        if (context.button) {
+            context.button.disabled = !!isBusy;
+        }
+        if (context.input) {
+            context.input.disabled = !!isBusy;
+        }
+    });
+}
+
 async function loadAvailableModels() {
     setModelSelectPlaceholder(t('models_loading'));
 
@@ -155,13 +363,17 @@ async function loadAvailableModels() {
     renderModelSelects();
 }
 
-window.renderDynamicUi = renderModelSelects;
+window.renderDynamicUi = () => {
+    renderModelSelects();
+    Object.values(attachmentContexts).forEach(renderAttachmentList);
+};
 
 function setStreamingUi(busy) {
     [inputAreaGeneral, inputAreaGuideline, inputAreaIdobata].forEach(area => {
         if (!area) return;
         area.classList.toggle('is-streaming', !!busy);
     });
+    updateAttachmentButtons();
 }
 
 function closeAllSettings() {
@@ -239,6 +451,15 @@ promptInputIdobata.addEventListener('keydown', handleKeyDownIdobata);
 sendButtonIdobata.addEventListener('click', startIdobataChat);
 clearButtonIdobata.addEventListener('click', clearIdobataChat);
 
+Object.values(attachmentContexts).forEach(context => {
+    if (context.button && context.input) {
+        context.button.addEventListener('click', () => context.input.click());
+    }
+    if (context.input) {
+        context.input.addEventListener('change', () => uploadSelectedFiles(context.mode));
+    }
+});
+
 if (approvalApproveButton) {
     approvalApproveButton.addEventListener('click', () => closeApprovalDialog('approve'));
 }
@@ -276,6 +497,7 @@ if (settingsButtonIdobata) {
 updateButtons();
 updateButtonsGuideline();
 updateButtonsIdobata();
+updateAttachmentButtons();
 
 // Marked.js config
 if (typeof marked !== 'undefined') {
@@ -527,9 +749,16 @@ async function initializeHistories() {
     await loadHistory(sessionIdIdobata, messagesIdobata, renderMessageIdobata, showWelcomeScreenIdobata, hideWelcomeScreenIdobata);
 }
 
+async function initializeAttachments() {
+    await loadAttachments('general');
+    await loadAttachments('guideline');
+    await loadAttachments('idobata');
+}
+
 async function initializeApp() {
     await loadAvailableModels();
     await initializeHistories();
+    await initializeAttachments();
 }
 
 function hideWelcomeScreen() {
@@ -1609,6 +1838,8 @@ function clearChat() {
     });
     
     messages = [];
+    attachments = [];
+    renderAttachmentList(attachmentContexts.general);
     // Keep welcome screen; remove other elements to reset UI
     Array.from(chatMessages.children).forEach(child => {
         if (welcomeScreen && child !== welcomeScreen) {
@@ -1628,6 +1859,8 @@ function clearIdobataChat() {
     });
 
     messagesIdobata = [];
+    attachmentsIdobata = [];
+    renderAttachmentList(attachmentContexts.idobata);
     Array.from(chatMessagesIdobata.children).forEach(child => {
         if (welcomeScreenIdobata && child !== welcomeScreenIdobata) {
             child.remove();
@@ -1646,6 +1879,8 @@ function clearGuidelineChat() {
     });
 
     messagesGuideline = [];
+    attachmentsGuideline = [];
+    renderAttachmentList(attachmentContexts.guideline);
     // Keep guideline welcome screen; remove other elements to reset UI
     Array.from(chatMessagesGuideline.children).forEach(child => {
         if (welcomeScreenGuideline && child !== welcomeScreenGuideline) {

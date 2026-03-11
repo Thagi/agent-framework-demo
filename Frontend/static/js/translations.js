@@ -65,7 +65,9 @@ const translations = {
         'multi_agent_button': 'マルチエージェント分析',
         'guideline_button': 'RAG検索',
         'idobata_button': 'AI役員会議',
-        
+        'attach_button': '添付',
+        'attachment_remove': '添付を削除',
+
         // Status
         'status_thinking': 'AI が考え中...',
         'status_multi_agent_analyzing': 'マルチエージェント分析中...',
@@ -183,7 +185,9 @@ const translations = {
         'multi_agent_button': 'Multi-Agent Analysis',
         'guideline_button': 'RAG Search',
         'idobata_button': 'AI Board Meeting',
-        
+        'attach_button': 'Attach',
+        'attachment_remove': 'Remove attachment',
+
         // Status
         'status_thinking': 'AI is thinking...',
         'status_multi_agent_analyzing': 'Analyzing with multiple agents...',

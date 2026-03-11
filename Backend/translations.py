@@ -47,6 +47,7 @@ translations = {
 3. 検索結果が見つからない場合は、その旨を正直に伝え、一般的な情報は提供しない
 4. 検索結果に基づかない情報を勝手に作成しない
 5. 出典URLは不要
+6. アップロードされたファイルは検索語や状況理解の補助としてのみ使い、最終回答の根拠は検索結果に限定する
 
 必ず検索ツールを使用してから回答してください。""",
         
@@ -235,6 +236,12 @@ PLAN_READY: 上記プランで実行準備完了
         'search_error': "検索エラー: {error}",
         'search_file_label': "ファイル名",
         'search_content_label': "内容",
+        'upload_error_missing_files': "アップロードするファイルを選択してください。",
+        'upload_error_too_many_files': "添付できるファイルは最大 {limit} 件です。",
+        'upload_error_unsupported_type': "{filename} は対応していないファイル形式です。",
+        'upload_error_file_too_large': "{filename} は容量制限を超えています（上限 {limit_mb}MB）。",
+        'upload_error_no_text': "{filename} から読み取れるテキストが見つかりませんでした。",
+        'upload_error_file_not_found': "指定された添付ファイルが見つかりませんでした。",
         'plan_fallback_goal': "ユーザーの依頼に答える",
         'plan_fallback_step_label': "対応ステップ",
         'plan_fallback_tool_label': "利用手段",
@@ -345,6 +352,7 @@ Follow these rules when responding:
 3. If no search results are found, honestly communicate this and do not provide general information
 4. Do not create information not based on search results
 5. Source URLs are not required
+6. Treat uploaded files only as supporting context for search and scenario understanding; ground the final answer in search results only
 
 Always use the search tool before responding.""",
         
@@ -533,6 +541,12 @@ Present a concrete executable plan.""",
         'search_error': "Search error: {error}",
         'search_file_label': "File name",
         'search_content_label': "Content",
+        'upload_error_missing_files': "Select at least one file to upload.",
+        'upload_error_too_many_files': "You can attach up to {limit} files per session.",
+        'upload_error_unsupported_type': "{filename} is not a supported file type.",
+        'upload_error_file_too_large': "{filename} exceeds the size limit (max {limit_mb}MB).",
+        'upload_error_no_text': "No readable text was found in {filename}.",
+        'upload_error_file_not_found': "The requested uploaded file was not found.",
         'plan_fallback_goal': "Address the user's request",
         'plan_fallback_step_label': "Step",
         'plan_fallback_tool_label': "Tool",

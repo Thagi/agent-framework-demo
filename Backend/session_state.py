@@ -28,8 +28,19 @@ class SlidingWindowChatMessageStore(ChatMessageStore):
 
 
 @dataclass
+class UploadedDocument:
+    file_id: str
+    name: str
+    content_type: str
+    size_bytes: int
+    extracted_text: str
+    preview_text: str
+
+
+@dataclass
 class SessionState:
     thread: AgentThread
+    uploaded_documents: list[UploadedDocument] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 

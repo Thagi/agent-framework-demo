@@ -115,6 +115,76 @@ def get_models():
         return jsonify({"default_model": None, "models": [], "error": str(exc)}), 502
 
 
+@app.route('/api/files', methods=['GET'])
+def get_uploaded_files():
+    session_id = request.args.get('session_id', 'default')
+    mode = request.args.get('mode', 'general')
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.get(
+                f"{app.config['BACKEND_URL']}/api/files",
+                params={'session_id': session_id, 'mode': mode},
+            )
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.error("Failed to fetch uploaded files: %s", exc)
+        return jsonify({"files": [], "error": str(exc)}), 502
+
+
+@app.route('/api/files', methods=['POST'])
+def upload_files():
+    session_id = request.form.get('session_id', 'default')
+    mode = request.form.get('mode', 'general')
+    files = request.files.getlist('files')
+
+    if not files:
+        return jsonify({'error': 'files required'}), 400
+
+    backend_files = []
+    for uploaded in files:
+        backend_files.append(
+            (
+                'files',
+                (
+                    uploaded.filename or 'uploaded-file',
+                    uploaded.read(),
+                    uploaded.mimetype or 'application/octet-stream',
+                ),
+            )
+        )
+
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            response = client.post(
+                f"{app.config['BACKEND_URL']}/api/files",
+                data={'session_id': session_id, 'mode': mode},
+                files=backend_files,
+            )
+            return jsonify(response.json()), response.status_code
+    except Exception as exc:
+        logger.error("Failed to upload files: %s", exc)
+        return jsonify({"files": [], "error": str(exc)}), 502
+
+
+@app.route('/api/files/<file_id>', methods=['DELETE'])
+def delete_uploaded_file(file_id: str):
+    session_id = request.args.get('session_id', 'default')
+    mode = request.args.get('mode', 'general')
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.delete(
+                f"{app.config['BACKEND_URL']}/api/files/{file_id}",
+                params={'session_id': session_id, 'mode': mode},
+            )
+            return jsonify(response.json()), response.status_code
+    except Exception as exc:
+        logger.error("Failed to delete uploaded file: %s", exc)
+        return jsonify({"files": [], "error": str(exc)}), 502
+
+
 @app.route('/api/messages', methods=['GET'])
 def get_messages():
     """Get message history"""

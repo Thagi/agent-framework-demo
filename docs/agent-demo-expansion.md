@@ -31,7 +31,7 @@ Work is being implemented in priority order. As of March 10, 2026, the status is
 | Task decomposition and plan visualization | Implemented | Visible plan panels are available in regular chat, multi-agent analysis, RAG, and the board workflow |
 | Human-in-the-loop approval | Implemented | Approve / reject / revise is shown for multi-agent analysis, board workflow, and approval-gated models |
 | Tool trace and evidence view | Implemented (RAG-first) | RAG search now shows search traces and document evidence separately from the answer |
-| File input support | Not started | Requires UI upload and extraction pipeline work |
+| File input support | Implemented | Each mode can attach `.txt/.md/.csv/.json/.pdf/.docx` files and use them as session context |
 
 That means the next step is not "can it answer?", but "can it plan, act, explain, and be governed?"
 
