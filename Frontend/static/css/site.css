@@ -891,6 +891,10 @@ body.guideline-mode .chat-header {
     z-index: 1000;
 }
 
+.approval-dialog-backdrop[hidden] {
+    display: none !important;
+}
+
 .approval-dialog {
     width: min(100%, 560px);
     background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
