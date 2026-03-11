@@ -307,11 +307,13 @@ class _GeminiBaseChatClient(BaseChatClient[dict[str, Any]]):
         contents, system_instructions = self._messages_to_gemini(messages)
         emitted_function_ids: set[str] = set()
 
-        async for chunk in client.models.generate_content_stream(
+        stream = await client.models.generate_content_stream(
             model=self.model_id,
             contents=contents,
             config=self._build_config(options=options, system_instructions=system_instructions),
-        ):
+        )
+
+        async for chunk in stream:
             if chunk.text:
                 yield ChatResponseUpdate(
                     text=chunk.text,
