@@ -20,7 +20,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Execution trace and evidence view**: RAG search shows query, hit count, duration, and supporting document excerpts separately from the answer
 - **File input support**: Attach `.txt / .md / .csv / .json / .pdf / .docx` files in each mode and use them as session context
 - **Model selection**: The frontend receives the available model list and provider metadata from the backend, so selectable models stay aligned with backend configuration
-- **Conversation memory**: The Backend keeps per-session history with Agent Framework `AgentThread`, and the Frontend re-renders server-side message history on reload
+- **Conversation memory**: The Backend persists Agent Framework `AgentThread` state to JSON, and the Frontend persists rendered history to JSON, so sessions survive restarts
 
 ### Multi-agent analysis (ConcurrentBuilder)
 <img src="./img/004.gif" width="80%" />
@@ -35,7 +35,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
     - Receives browser requests and proxies them to the Backend with streaming
 - **Backend**: FastAPI (port 8000)
     - Executes agents using Microsoft Agent Framework
-    - Keeps per-session `AgentThread` state and uses it for follow-up answers
+    - Persists per-session `AgentThread` state and uploaded-file metadata to JSON, then uses it for follow-up answers
     - Reads provider-aware model settings from `.env`, then exposes the safe model list to the frontend
     - Calls Azure OpenAI or OpenAI and streams the output back
 
@@ -134,6 +134,7 @@ Notes:
 - `REQUIRES_APPROVAL=true` makes the frontend show an approval dialog before that model is used.
 - `APPROVAL_REASON` is shown as-is in the approval dialog.
 - With aliases such as `openai-gpt-5-mini`, the env prefix becomes `LLM_MODEL_OPENAI_GPT_5_MINI_*`.
+- `BACKEND_SESSION_STORE_PATH` overrides where backend conversation history and uploaded-file metadata are stored. The default is `Backend/data/backend_sessions`.
 
 (Optional) If you use Azure AI Search (RAG search):
 
@@ -244,6 +245,11 @@ $env:BACKEND_URL = "http://localhost:8000"
 $env:LANGUAGE = "ja"
 python .\Frontend\app.py
 ```
+
+Notes:
+
+- `FRONTEND_MESSAGE_STORE_PATH` overrides where the frontend stores rendered message history. The default is `Frontend/data/frontend_messages`.
+- `podman-compose.yml` mounts `/app/data` as a named volume for both services, so history survives `podman-compose down`. Use `podman-compose down -v` when you want to remove the persisted state.
 
 ## How to use (UI)
 

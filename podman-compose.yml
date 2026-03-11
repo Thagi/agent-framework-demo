@@ -10,6 +10,8 @@ services:
       - ./Backend/.env
     ports:
       - "8000:8000"
+    volumes:
+      - backend_data:/app/data
     restart: unless-stopped
 
   frontend:
@@ -25,4 +27,10 @@ services:
       - backend
     ports:
       - "5001:5001"
+    volumes:
+      - frontend_data:/app/data
     restart: unless-stopped
+
+volumes:
+  backend_data:
+  frontend_data:

@@ -20,7 +20,7 @@
 - **実行ログと根拠表示**: RAG検索で検索語・結果件数・所要時間・参照文書の抜粋を回答と分離して表示
 - **ファイル入力対応**: `.txt / .md / .csv / .json / .pdf / .docx` を各モードへ添付し、セッション文脈として回答に反映
 - **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
-- **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`で会話履歴を保持し、Frontendもサーバーメモリ上の履歴を再描画
+- **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`をJSONへ永続化し、Frontendの表示履歴もJSONへ保持するため再起動後も継続会話できる
 
 
 ### マルチエージェント分析（ConcurrentBuilder）
@@ -36,7 +36,7 @@
     - ブラウザからのリクエストを受け、Backendにストリーミングで中継（プロキシ）
 - **Backend**: FastAPI（port 8000）
     - Microsoft Agent Frameworkを使ってエージェント実行
-    - セッション単位で`AgentThread`を保持し、会話履歴を次の回答へ反映
+    - セッション単位で`AgentThread`と添付ファイル情報をJSONへ永続化し、会話履歴を次の回答へ反映
     - `.env` の provider 別モデル設定を読み込み、安全なモデル一覧だけを Frontend に公開
     - Azure OpenAI または OpenAI を呼び出し、結果をストリーミング返却
 
@@ -135,6 +135,7 @@ provider ごとの必須項目:
 - `REQUIRES_APPROVAL=true` を付けると、そのモデル選択時に Frontend で承認ダイアログを表示します。
 - `APPROVAL_REASON` を設定すると、承認ダイアログへ理由をそのまま表示します。
 - `openai-gpt-5-mini` のような別名を使う場合、env の接頭辞は `LLM_MODEL_OPENAI_GPT_5_MINI_*` になります。
+- `BACKEND_SESSION_STORE_PATH` を指定すると、Backend の会話履歴と添付ファイルメタデータの保存先を変更できます。省略時は `Backend/data/backend_sessions` です。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 
@@ -245,6 +246,11 @@ $env:BACKEND_URL = "http://localhost:8000"
 $env:LANGUAGE = "ja"
 python .\Frontend\app.py
 ```
+
+補足:
+
+- `FRONTEND_MESSAGE_STORE_PATH` を指定すると、Frontend が保持する描画用履歴の保存先を変更できます。省略時は `Frontend/data/frontend_messages` です。
+- `podman-compose.yml` では Backend / Frontend ともに `/app/data` を named volume にしているため、`podman-compose down` の後も履歴は残ります。完全に消す場合は `podman-compose down -v` を使ってください。
 
 ## 使い方（UI）
 

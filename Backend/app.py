@@ -67,7 +67,10 @@ MODE_GENERAL = "general"
 MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
 
-session_store = SessionStore(max_messages=SESSION_HISTORY_MESSAGES)
+session_store = SessionStore(
+    max_messages=SESSION_HISTORY_MESSAGES,
+    store_dir=os.getenv("BACKEND_SESSION_STORE_PATH", "data/backend_sessions"),
+)
 SEARCH_EXCERPT_LIMIT = max(int(os.getenv("SEARCH_EXCERPT_LIMIT", "280")), 80)
 SEARCH_TRACE_CONTEXT: ContextVar[list[dict[str, Any]] | None] = ContextVar("search_trace_context", default=None)
 MAX_UPLOAD_FILES = max(int(os.getenv("MAX_UPLOAD_FILES", "5")), 1)
@@ -755,6 +758,7 @@ async def append_session_exchange(mode: str, session_id: str, user_prompt: str, 
             ChatMessage(role="assistant", text=assistant_reply),
         ]
     )
+    await session_store.save_session(mode, session_id)
 
 
 async def generate_execution_plan(prompt: str, mode: str, session_id: str, model_chat_client) -> dict[str, object]:
@@ -932,6 +936,7 @@ async def api_stream(request: Request):
 
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
+                await session_store.save_session(MODE_GENERAL, session_id)
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
             except Exception as e:
                 logger.exception("[%s] Regular chat stream failed", request_id)
@@ -1009,6 +1014,7 @@ async def api_guideline_stream(request: Request):
 
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
+                await session_store.save_session(MODE_GUIDELINE, session_id)
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
 
             except Exception as e:
@@ -1501,6 +1507,7 @@ async def upload_files(
             session.uploaded_documents.append(document)
             uploaded.append(_document_metadata(document))
 
+        await session_store.save_session(mode, session_id)
         return {
             "files": uploaded,
             "all_files": [_document_metadata(document) for document in session.uploaded_documents],
@@ -1518,6 +1525,7 @@ async def delete_uploaded_file(file_id: str, session_id: str = "default", mode: 
         if len(session.uploaded_documents) == before_count:
             return JSONResponse({"error": get_text('upload_error_file_not_found', LANGUAGE)}, status_code=404)
 
+        await session_store.save_session(mode, session_id)
         return {"status": "ok", "files": [_document_metadata(document) for document in session.uploaded_documents]}
 
 

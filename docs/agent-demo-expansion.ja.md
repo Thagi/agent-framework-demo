@@ -24,7 +24,7 @@
 
 ## 開発ステータス
 
-優先順位に従って順次実装を進めます。2026-03-10 時点のステータスは以下です。
+優先順位に従って順次実装を進めます。2026-03-11 時点のステータスは以下です。
 
 | 項目 | ステータス | 備考 |
 |---|---|---|
@@ -32,6 +32,7 @@
 | Human-in-the-loop承認 | 実装済み | マルチAgent分析 / AI役員会議 / 承認対象モデルで approve / reject / revise を表示 |
 | ツール実行ログと根拠表示 | 実装済み（RAG先行） | RAG検索で検索 trace と文書 evidence を回答と分離表示 |
 | ファイル入力対応 | 実装済み | 各モードで `.txt/.md/.csv/.json/.pdf/.docx` を添付し、セッション文脈へ反映 |
+| 永続メモリ化 | 実装済み（JSONファイル先行） | Backend は `AgentThread` と添付情報、Frontend は描画履歴を JSON 永続化。`podman-compose` では named volume で保持 |
 
 このため、次の拡張は「Agentを呼べるか」ではなく、「Agentがどこまで自律的に仕事を進められるか」を強化する方向が適切です。
 
@@ -137,21 +138,22 @@ Agentが何をしたかを見える化します。
 
 #### 5. 永続メモリ化
 
-現在はプロセス内メモリ中心なので、以下へ保存先を移します。
+初期段階として、以下を JSON ファイルへ永続化済みです。
 
-- Redis
-- PostgreSQL
-- Blob Storage + メタデータDB
+- Backend の `AgentThread`
+- Backend の添付ファイルメタデータ
+- Frontend の描画用メッセージ履歴
 
-効果:
+現状の効果:
 
-- 再起動後も会話継続可能
-- セッション履歴の共有・再利用が可能
+- アプリ再起動後も会話継続可能
+- `podman-compose` では named volume により履歴を維持可能
 
-実装ポイント:
+次段階の実装ポイント:
 
-- `SessionStore` を抽象化
-- `AgentThread` と会話メタデータの永続化層を分離
+- `SessionStore` をストレージ抽象化
+- Redis / PostgreSQL / Blob Storage への移行
+- セッション履歴の共有・検索
 
 #### 6. Agentルーティング
 

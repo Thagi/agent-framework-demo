@@ -5,6 +5,7 @@ import time
 import logging
 from datetime import datetime
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -31,8 +32,43 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 app.config['ENABLE_DI_LINK'] = _env_bool('ENABLE_DI_LINK', False)
 
-# Session storage (use Redis in production)
+# Session storage persisted to JSON files per session.
 messages_store = {}
+APP_DIR = Path(__file__).resolve().parent
+MESSAGE_STORE_DIR = Path(os.getenv('FRONTEND_MESSAGE_STORE_PATH', 'data/frontend_messages'))
+if not MESSAGE_STORE_DIR.is_absolute():
+    MESSAGE_STORE_DIR = APP_DIR / MESSAGE_STORE_DIR
+MESSAGE_STORE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _message_store_path(session_id: str) -> Path:
+    safe_session_id = ''.join(ch if ch.isalnum() or ch in ('-', '_') else '_' for ch in session_id)
+    return MESSAGE_STORE_DIR / f'{safe_session_id or "default"}.json'
+
+
+def _load_persisted_messages(session_id: str) -> list:
+    path = _message_store_path(session_id)
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return []
+
+
+def _persist_messages(session_id: str) -> None:
+    path = _message_store_path(session_id)
+    payload = messages_store.get(session_id, [])
+    temp_path = path.with_name(f'.{path.name}.tmp')
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+    temp_path.replace(path)
+
+
+def _append_message(session_id: str, message: dict) -> None:
+    if session_id not in messages_store:
+        messages_store[session_id] = _load_persisted_messages(session_id)
+    messages_store[session_id].append(message)
+    _persist_messages(session_id)
 
 
 FRONT_TEXT = {
@@ -189,7 +225,10 @@ def delete_uploaded_file(file_id: str):
 def get_messages():
     """Get message history"""
     session_id = request.args.get('session_id', 'default')
-    messages = messages_store.get(session_id, [])
+    messages = messages_store.get(session_id)
+    if messages is None:
+        messages = _load_persisted_messages(session_id)
+        messages_store[session_id] = messages
     return jsonify(messages)
 
 
@@ -200,6 +239,9 @@ def clear_messages():
     session_id = data.get('session_id', 'default')
     mode = data.get('mode', 'general')
     messages_store[session_id] = []
+    path = _message_store_path(session_id)
+    if path.exists():
+        path.unlink()
     clear_backend_session(mode, session_id)
     return jsonify({'status': 'ok'})
 
@@ -221,15 +263,12 @@ def chat_stream():
         return jsonify({'error': 'prompt required'}), 400
     
     # Save user message
-    if session_id not in messages_store:
-        messages_store[session_id] = []
-    
     user_message = {
         'is_user': True,
         'content': prompt,
         'timestamp': datetime.now().isoformat()
     }
-    messages_store[session_id].append(user_message)
+    _append_message(session_id, user_message)
     
     def generate():
         """Generate streaming response"""
@@ -280,7 +319,7 @@ def chat_stream():
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
-            messages_store[session_id].append(ai_message)
+            _append_message(session_id, ai_message)
             
         except Exception as e:
             error_data = {'type': 'error', 'message': str(e)}
@@ -293,7 +332,7 @@ def chat_stream():
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
-            messages_store[session_id].append(ai_message)
+            _append_message(session_id, ai_message)
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
@@ -312,15 +351,12 @@ def guideline_stream():
     if not prompt:
         return jsonify({'error': 'prompt required'}), 400
 
-    if session_id not in messages_store:
-        messages_store[session_id] = []
-
     user_message = {
         'is_user': True,
         'content': prompt,
         'timestamp': datetime.now().isoformat()
     }
-    messages_store[session_id].append(user_message)
+    _append_message(session_id, user_message)
     
     def generate():
         """Generate streaming response"""
@@ -354,7 +390,8 @@ def guideline_stream():
                         elif payload.get('type') == 'evidence' and payload.get('evidence'):
                             evidence_payload = payload.get('evidence')
 
-            messages_store[session_id].append(
+            _append_message(
+                session_id,
                 {
                     'is_user': False,
                     'content': ai_content,
@@ -368,7 +405,8 @@ def guideline_stream():
             
         except Exception as e:
             yield json.dumps({'type': 'error', 'message': str(e)}) + '\n'
-            messages_store[session_id].append(
+            _append_message(
+                session_id,
                 {
                     'is_user': False,
                     'content': ai_content + front_text('error_block', error=str(e)),
@@ -400,15 +438,12 @@ def multi_agent_stream():
         return jsonify({'error': 'prompt required'}), 400
     
     # Save user message
-    if session_id not in messages_store:
-        messages_store[session_id] = []
-    
     user_message = {
         'is_user': True,
         'content': f"{front_text('label_multi_agent')} {prompt}",
         'timestamp': datetime.now().isoformat()
     }
-    messages_store[session_id].append(user_message)
+    _append_message(session_id, user_message)
     
     def generate():
         """Generate multi-agent streaming response"""
@@ -469,14 +504,14 @@ def multi_agent_stream():
             )
             
             # Save AI message
-            messages_store[session_id].append(ai_message)
+            _append_message(session_id, ai_message)
             
         except Exception as e:
             error_data = {'type': 'error', 'message': str(e)}
             yield json.dumps(error_data) + '\n'
             
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
-            messages_store[session_id].append(ai_message)
+            _append_message(session_id, ai_message)
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
@@ -500,15 +535,12 @@ def idobata_stream():
     if not prompt:
         return jsonify({'error': 'prompt required'}), 400
 
-    if session_id not in messages_store:
-        messages_store[session_id] = []
-
     user_message = {
         'is_user': True,
         'content': f"{front_text('label_idobata')} {prompt}",
         'timestamp': datetime.now().isoformat()
     }
-    messages_store[session_id].append(user_message)
+    _append_message(session_id, user_message)
 
     def generate():
         ai_message = {
@@ -571,14 +603,14 @@ def idobata_stream():
                 f"[{request_id}] {front_text('log_front_completed_lines', s=f'{total_time:.2f}', count=line_count)}"
             )
 
-            messages_store[session_id].append(ai_message)
+            _append_message(session_id, ai_message)
 
         except Exception as e:
             error_data = {'type': 'error', 'message': str(e)}
             yield json.dumps(error_data) + '\n'
 
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
-            messages_store[session_id].append(ai_message)
+            _append_message(session_id, ai_message)
 
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 

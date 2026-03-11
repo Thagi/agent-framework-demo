@@ -9,3 +9,5 @@ env/
 
 Backend/.env
 Frontend/.env
+Backend/data/
+Frontend/data/
