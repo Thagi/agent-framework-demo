@@ -20,6 +20,8 @@
 - AI役員会議のような役割分担型Group Chat
 - セッション単位の会話履歴メモリ
 - Backend主導のモデル設定とFrontend連携
+- OpenAI / Azure OpenAI / Gemini / Vertex AI Gemini の切り替え
+- PDF / 画像を含むマルチモーダル入力
 - `podman-compose` による起動
 
 ## 開発ステータス
@@ -31,7 +33,7 @@
 | タスク分解と実行計画の可視化 | 実装済み | 通常チャット / マルチAgent分析 / RAG検索 / AI役員会議で plan を表示 |
 | Human-in-the-loop承認 | 実装済み | マルチAgent分析 / AI役員会議 / 承認対象モデルで approve / reject / revise を表示 |
 | ツール実行ログと根拠表示 | 実装済み（RAG先行） | RAG検索で検索 trace と文書 evidence を回答と分離表示 |
-| ファイル入力対応 | 実装済み | 各モードで `.txt/.md/.csv/.json/.pdf/.docx` を添付し、セッション文脈へ反映 |
+| ファイル入力対応 | 実装済み | 各モードで `.txt/.md/.csv/.json/.pdf/.docx/.png/.jpg/.jpeg/.webp/.gif` を添付し、テキスト文脈またはマルチモーダル入力として反映 |
 | 永続メモリ化 | 実装済み（JSONファイル先行） | Backend は `AgentThread` と添付情報、Frontend は描画履歴を JSON 永続化。`podman-compose` では named volume で保持 |
 
 このため、次の拡張は「Agentを呼べるか」ではなく、「Agentがどこまで自律的に仕事を進められるか」を強化する方向が適切です。
@@ -132,6 +134,7 @@ Agentが何をしたかを見える化します。
 
 - Frontendにファイルアップロード
 - Backendで一時保存とテキスト抽出
+- マルチモーダル対応モデルでは PDF / 画像の原本も入力へ渡す
 - 抽出内容を thread memory または添付コンテキストに投入
 
 ### Phase 2: Agentらしさを強める拡張

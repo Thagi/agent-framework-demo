@@ -3,17 +3,19 @@ import re
 import time
 import json
 import logging
+import mimetypes
 from io import BytesIO
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Optional, Any
+from pathlib import Path
+from typing import Optional, Any, Awaitable, Callable
 from uuid import uuid4
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-from agent_framework import ChatAgent, ChatMessage, ConcurrentBuilder, AgentRunUpdateEvent, WorkflowOutputEvent, GroupChatBuilder
+from agent_framework import ChatAgent, ChatMessage, ConcurrentBuilder, AgentRunUpdateEvent, WorkflowOutputEvent, GroupChatBuilder, Content
 from agent_framework.azure import AzureOpenAIChatClient
 from agent_framework.openai import OpenAIChatClient
 # from agent_framework.azure import AzureAISearchContextProvider
@@ -66,11 +68,16 @@ PLAN_TOOL_LIMIT = max(int(os.getenv("PLAN_TOOL_LIMIT", "4")), 1)
 MODE_GENERAL = "general"
 MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
+BACKEND_DIR = Path(__file__).resolve().parent
 
 session_store = SessionStore(
     max_messages=SESSION_HISTORY_MESSAGES,
     store_dir=os.getenv("BACKEND_SESSION_STORE_PATH", "data/backend_sessions"),
 )
+BACKEND_UPLOAD_STORE_DIR = Path(os.getenv("BACKEND_UPLOAD_STORE_PATH", "data/backend_upload_assets"))
+if not BACKEND_UPLOAD_STORE_DIR.is_absolute():
+    BACKEND_UPLOAD_STORE_DIR = BACKEND_DIR / BACKEND_UPLOAD_STORE_DIR
+BACKEND_UPLOAD_STORE_DIR.mkdir(parents=True, exist_ok=True)
 SEARCH_EXCERPT_LIMIT = max(int(os.getenv("SEARCH_EXCERPT_LIMIT", "280")), 80)
 SEARCH_TRACE_CONTEXT: ContextVar[list[dict[str, Any]] | None] = ContextVar("search_trace_context", default=None)
 MAX_UPLOAD_FILES = max(int(os.getenv("MAX_UPLOAD_FILES", "5")), 1)
@@ -85,7 +92,14 @@ ALLOWED_UPLOAD_EXTENSIONS = {
     ".json",
     ".pdf",
     ".docx",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".gif",
 }
+IMAGE_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+TEXT_UPLOAD_EXTENSIONS = {".txt", ".md", ".csv", ".json"}
 
 MODEL_LABEL_DEFAULTS = {
     "gpt-4.1": "GPT-4.1",
@@ -102,9 +116,13 @@ MODEL_LABEL_DEFAULTS = {
 }
 MODEL_PROVIDER_AZURE = "azure"
 MODEL_PROVIDER_OPENAI = "openai"
+MODEL_PROVIDER_GEMINI = "gemini"
+MODEL_PROVIDER_VERTEX_GEMINI = "vertex_gemini"
 MODEL_PROVIDER_LABELS = {
     MODEL_PROVIDER_AZURE: "Azure OpenAI",
     MODEL_PROVIDER_OPENAI: "OpenAI",
+    MODEL_PROVIDER_GEMINI: "Gemini API",
+    MODEL_PROVIDER_VERTEX_GEMINI: "Vertex AI Gemini",
 }
 
 
@@ -113,14 +131,20 @@ class ModelConfig:
     model_id: str
     label: str
     provider: str
-    api_key: str
+    api_key: str | Callable[[], str | Awaitable[str]] | None
     endpoint: str | None = None
     deployment_name: str | None = None
     api_version: str | None = None
     provider_model_id: str | None = None
     org_id: str | None = None
+    project: str | None = None
+    location: str | None = None
+    credentials_path: str | None = None
     approval_required: bool = False
     approval_reason: str | None = None
+    supports_multimodal: bool = False
+    supports_image_input: bool = False
+    supports_pdf_input: bool = False
 
     @property
     def provider_label(self) -> str:
@@ -217,9 +241,15 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
     deployment_name = os.getenv(f"{prefix}DEPLOYMENT", "").strip() or None
     provider_model_id = os.getenv(f"{prefix}MODEL_ID", "").strip() or None
     org_id = os.getenv(f"{prefix}ORG_ID", "").strip() or None
+    project = os.getenv(f"{prefix}PROJECT", "").strip() or None
+    location = os.getenv(f"{prefix}LOCATION", "").strip() or None
+    credentials_path = os.getenv(f"{prefix}CREDENTIALS_PATH", "").strip() or None
     label = os.getenv(f"{prefix}LABEL", "").strip()
     approval_required = _parse_bool_env(f"{prefix}REQUIRES_APPROVAL", False)
     approval_reason = os.getenv(f"{prefix}APPROVAL_REASON", "").strip() or None
+    supports_multimodal = _parse_bool_env(f"{prefix}SUPPORTS_MULTIMODAL", provider in {MODEL_PROVIDER_GEMINI, MODEL_PROVIDER_VERTEX_GEMINI})
+    supports_image_input = _parse_bool_env(f"{prefix}SUPPORTS_IMAGE_INPUT", supports_multimodal)
+    supports_pdf_input = _parse_bool_env(f"{prefix}SUPPORTS_PDF_INPUT", supports_multimodal)
 
     if provider == MODEL_PROVIDER_AZURE:
         configured_values = {
@@ -240,6 +270,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 api_version=api_version,
                 approval_required=approval_required,
                 approval_reason=approval_reason,
+                supports_multimodal=supports_multimodal,
+                supports_image_input=supports_image_input,
+                supports_pdf_input=supports_pdf_input,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "ENDPOINT", "DEPLOYMENT"])
         return None
@@ -264,8 +297,68 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 org_id=org_id,
                 approval_required=approval_required,
                 approval_reason=approval_reason,
+                supports_multimodal=supports_multimodal,
+                supports_image_input=supports_image_input,
+                supports_pdf_input=supports_pdf_input,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "MODEL_ID"])
+        return None
+
+    if provider == MODEL_PROVIDER_GEMINI:
+        resolved_endpoint = endpoint or base_url or None
+        configured_values = {
+            "PROVIDER": provider,
+            "API_KEY": api_key,
+            "MODEL_ID": provider_model_id,
+            "ENDPOINT": resolved_endpoint,
+        }
+        if api_key and provider_model_id:
+            return ModelConfig(
+                model_id=model_id,
+                label=label or _default_model_label(model_id, provider, reference_name=provider_model_id),
+                provider=provider,
+                api_key=api_key,
+                endpoint=resolved_endpoint,
+                provider_model_id=provider_model_id,
+                api_version=api_version,
+                approval_required=approval_required,
+                approval_reason=approval_reason,
+                supports_multimodal=supports_multimodal,
+                supports_image_input=supports_image_input,
+                supports_pdf_input=supports_pdf_input,
+            )
+        _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "MODEL_ID"])
+        return None
+
+    if provider == MODEL_PROVIDER_VERTEX_GEMINI:
+        resolved_endpoint = endpoint or base_url or None
+        configured_values = {
+            "PROVIDER": provider,
+            "MODEL_ID": provider_model_id,
+            "PROJECT": project,
+            "LOCATION": location,
+            "CREDENTIALS_PATH": credentials_path,
+            "ENDPOINT": resolved_endpoint,
+        }
+        if provider_model_id and project and location:
+            return ModelConfig(
+                model_id=model_id,
+                label=label or _default_model_label(model_id, provider, reference_name=provider_model_id),
+                provider=provider,
+                api_key=None,
+                endpoint=resolved_endpoint,
+                provider_model_id=provider_model_id,
+                api_version=api_version,
+                project=project,
+                location=location,
+                credentials_path=credentials_path,
+                approval_required=approval_required,
+                approval_reason=approval_reason,
+                supports_multimodal=supports_multimodal,
+                supports_image_input=supports_image_input,
+                supports_pdf_input=supports_pdf_input,
+            )
+        _warn_incomplete_model_config(model_id, prefix, configured_values, ["MODEL_ID", "PROJECT", "LOCATION"])
         return None
 
     configured_values = {
@@ -276,6 +369,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
         "DEPLOYMENT": deployment_name,
         "MODEL_ID": provider_model_id,
         "ORG_ID": org_id,
+        "PROJECT": project,
+        "LOCATION": location,
+        "CREDENTIALS_PATH": credentials_path,
         "LABEL": label,
     }
     if any(value for value in configured_values.values()):
@@ -407,24 +503,53 @@ def _build_chat_client(config: ModelConfig):
             kwargs["org_id"] = config.org_id
         return OpenAIChatClient(**kwargs)
 
+    if config.provider == MODEL_PROVIDER_GEMINI:
+        from gemini_clients import GeminiChatClient
+
+        return GeminiChatClient(
+            model_id=config.provider_model_id or config.model_id,
+            api_key=config.api_key,
+            api_version=config.api_version,
+            base_url=config.endpoint,
+        )
+
+    if config.provider == MODEL_PROVIDER_VERTEX_GEMINI:
+        from gemini_clients import GeminiChatClient, load_vertex_credentials
+
+        credentials = load_vertex_credentials(config.credentials_path)
+        return GeminiChatClient(
+            model_id=config.provider_model_id or config.model_id,
+            credentials=credentials,
+            project=config.project,
+            location=config.location,
+            api_version=config.api_version,
+            base_url=config.endpoint,
+        )
+
     raise ValueError(f"Unsupported provider: {config.provider}")
 
 
-MODEL_CLIENTS = {
-    model_id: _build_chat_client(config)
-    for model_id, config in MODEL_REGISTRY.items()
-}
+MODEL_CLIENTS: dict[str, Any] = {}
 
 def get_chat_client_for_model(model_name: str = None):
     """Return a chat client for the requested model."""
-    if not MODEL_CLIENTS:
+    if not MODEL_REGISTRY:
         return None
 
-    resolved_model_name = model_name if model_name in MODEL_CLIENTS else DEFAULT_MODEL_NAME
+    resolved_model_name = model_name if model_name in MODEL_REGISTRY else DEFAULT_MODEL_NAME
     if not resolved_model_name:
         return None
 
     config = MODEL_REGISTRY[resolved_model_name]
+    client = MODEL_CLIENTS.get(resolved_model_name)
+    if client is None:
+        try:
+            client = _build_chat_client(config)
+        except Exception:
+            logger.exception("Failed to initialize model client for '%s'", resolved_model_name)
+            return None
+        MODEL_CLIENTS[resolved_model_name] = client
+
     logger.info(
         get_text(
             'log_model_selected',
@@ -434,7 +559,16 @@ def get_chat_client_for_model(model_name: str = None):
             target=config.target_name,
         )
     )
-    return MODEL_CLIENTS[resolved_model_name]
+    return client
+
+
+def get_model_config_for_model(model_name: str | None) -> ModelConfig | None:
+    if not MODEL_REGISTRY:
+        return None
+    resolved_model_name = model_name if model_name in MODEL_REGISTRY else DEFAULT_MODEL_NAME
+    if not resolved_model_name:
+        return None
+    return MODEL_REGISTRY.get(resolved_model_name)
 
 
 def get_requested_model_name(body: dict) -> str | None:
@@ -458,6 +592,9 @@ def get_model_metadata() -> list[dict[str, object]]:
             "is_default": config.model_id == DEFAULT_MODEL_NAME,
             "approval_required": config.approval_required,
             "approval_reason": config.approval_reason,
+            "supports_multimodal": config.supports_multimodal,
+            "supports_image_input": config.supports_image_input,
+            "supports_pdf_input": config.supports_pdf_input,
         }
         for config in MODEL_REGISTRY.values()
     ]
@@ -544,6 +681,31 @@ def _guess_upload_extension(filename: str) -> str:
     return extension.lower()
 
 
+def _normalize_upload_media_type(filename: str, content_type: str | None = None) -> str:
+    raw = (content_type or "").split(";", 1)[0].strip().lower()
+    if raw and raw != "application/octet-stream":
+        return raw
+    guessed, _ = mimetypes.guess_type(filename or "")
+    if guessed:
+        return guessed.lower()
+    extension = _guess_upload_extension(filename)
+    if extension == ".pdf":
+        return "application/pdf"
+    if extension in IMAGE_UPLOAD_EXTENSIONS:
+        return f"image/{extension.lstrip('.') if extension != '.jpg' else 'jpeg'}"
+    return "text/plain"
+
+
+def _resolve_upload_kind(filename: str, content_type: str | None = None) -> str:
+    extension = _guess_upload_extension(filename)
+    media_type = _normalize_upload_media_type(filename, content_type)
+    if extension == ".pdf" or media_type == "application/pdf":
+        return "pdf"
+    if extension in IMAGE_UPLOAD_EXTENSIONS or media_type.startswith("image/"):
+        return "image"
+    return "text"
+
+
 def _decode_text_bytes(data: bytes) -> str:
     for encoding in ("utf-8", "utf-8-sig", "cp932", "latin-1"):
         try:
@@ -556,7 +718,7 @@ def _decode_text_bytes(data: bytes) -> str:
 def _extract_document_text(filename: str, data: bytes) -> str:
     extension = _guess_upload_extension(filename)
 
-    if extension in {".txt", ".md", ".csv", ".json"}:
+    if extension in TEXT_UPLOAD_EXTENSIONS:
         return _decode_text_bytes(data)
 
     if extension == ".pdf":
@@ -575,7 +737,39 @@ def _extract_document_text(filename: str, data: bytes) -> str:
         paragraphs = [paragraph.text for paragraph in document.paragraphs if paragraph.text.strip()]
         return "\n".join(paragraphs)
 
+    if extension in IMAGE_UPLOAD_EXTENSIONS:
+        return ""
+
     raise ValueError(get_text('upload_error_unsupported_type', LANGUAGE, filename=filename))
+
+
+def _session_asset_dir(mode: str, session_id: str) -> Path:
+    safe_mode = re.sub(r"[^A-Za-z0-9._-]+", "_", mode).strip("_") or "mode"
+    safe_session = re.sub(r"[^A-Za-z0-9._-]+", "_", session_id).strip("_") or "session"
+    asset_dir = BACKEND_UPLOAD_STORE_DIR / f"{safe_mode}__{safe_session}"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    return asset_dir
+
+
+def _store_uploaded_asset(mode: str, session_id: str, file_id: str, filename: str, data: bytes) -> str:
+    asset_path = _session_asset_dir(mode, session_id) / f"{file_id}{_guess_upload_extension(filename)}"
+    asset_path.write_bytes(data)
+    return str(asset_path)
+
+
+def _delete_uploaded_asset(document: UploadedDocument) -> None:
+    if not document.storage_path:
+        return
+    asset_path = Path(document.storage_path)
+    if asset_path.exists():
+        asset_path.unlink()
+    parent = asset_path.parent
+    if parent.exists() and not any(parent.iterdir()):
+        parent.rmdir()
+
+
+def _supports_multimodal_input(document: UploadedDocument) -> bool:
+    return document.kind in {"image", "pdf"} and bool(document.storage_path)
 
 
 def _document_metadata(document: UploadedDocument) -> dict[str, Any]:
@@ -586,6 +780,8 @@ def _document_metadata(document: UploadedDocument) -> dict[str, Any]:
         "size_bytes": document.size_bytes,
         "preview_text": document.preview_text,
         "text_length": len(document.extracted_text),
+        "kind": document.kind,
+        "supports_multimodal": _supports_multimodal_input(document),
     }
 
 
@@ -596,22 +792,82 @@ def _format_uploaded_documents(documents: list[UploadedDocument]) -> str:
     parts: list[str] = []
     remaining_chars = MAX_PROMPT_DOCUMENT_CHARS
     for index, document in enumerate(documents, start=1):
-        if remaining_chars <= 0:
-            break
-        available_chars = max(200, remaining_chars)
-        excerpt = document.extracted_text[:available_chars].strip()
-        if not excerpt:
+        if document.extracted_text.strip():
+            if remaining_chars <= 0:
+                break
+            available_chars = max(200, remaining_chars)
+            excerpt = document.extracted_text[:available_chars].strip()
+            if len(document.extracted_text) > len(excerpt):
+                excerpt = f"{excerpt}\n...[truncated]"
+            block = f"[Document {index}] {document.name}\n{excerpt}"
+            remaining_chars -= len(excerpt)
+        elif document.kind == "image":
+            block = f"[Image {index}] {document.name}\nImage attachment available for multimodal analysis."
+        elif document.kind == "pdf":
+            block = f"[PDF {index}] {document.name}\nPDF attachment available for multimodal analysis."
+        else:
             continue
-        if len(document.extracted_text) > len(excerpt):
-            excerpt = f"{excerpt}\n...[truncated]"
-        block = f"[Document {index}] {document.name}\n{excerpt}"
         parts.append(block)
-        remaining_chars -= len(excerpt)
 
     if not parts:
         return ""
 
     return "Uploaded session documents:\n\n" + "\n\n".join(parts)
+
+
+def _multimodal_prompt_header(documents: list[UploadedDocument]) -> str:
+    items = [f"- {document.name} ({document.kind})" for document in documents]
+    if not items:
+        return ""
+    return (
+        "The attached PDF/image files are included as multimodal inputs with this request. "
+        "Use them when they are relevant.\n\n"
+        "Attached multimodal files:\n"
+        + "\n".join(items)
+    )
+
+
+def _load_multimodal_contents(
+    documents: list[UploadedDocument],
+    model_config: ModelConfig | None,
+) -> tuple[list[Content], list[str], list[UploadedDocument]]:
+    if model_config is None:
+        return [], [], []
+
+    contents: list[Content] = []
+    unsupported: list[str] = []
+    included_documents: list[UploadedDocument] = []
+
+    for document in documents:
+        if not _supports_multimodal_input(document):
+            continue
+
+        if document.kind == "image" and not model_config.supports_image_input:
+            unsupported.append(document.name)
+            continue
+        if document.kind == "pdf" and not model_config.supports_pdf_input:
+            if not document.extracted_text.strip():
+                unsupported.append(document.name)
+            continue
+
+        if not document.storage_path:
+            unsupported.append(document.name)
+            continue
+
+        asset_path = Path(document.storage_path)
+        if not asset_path.exists():
+            unsupported.append(document.name)
+            continue
+
+        contents.append(
+            Content.from_data(
+                asset_path.read_bytes(),
+                media_type=document.content_type,
+            )
+        )
+        included_documents.append(document)
+
+    return contents, unsupported, included_documents
 
 
 def _normalize_plan_items(values: object, *, max_items: int, fallback_prefix: str) -> list[str]:
@@ -747,6 +1003,61 @@ async def build_prompt_with_documents(prompt: str, mode: str, session_id: str) -
     )
 
 
+async def build_agent_input(
+    prompt: str,
+    mode: str,
+    session_id: str,
+    model_name: str | None,
+    *,
+    include_history: bool,
+) -> str | ChatMessage:
+    model_config = get_model_config_for_model(model_name)
+    session = await session_store.get_session(mode, session_id)
+
+    if include_history and session.thread.message_store is not None:
+        history_messages = await session.thread.message_store.list_messages()
+        history_block = _format_history_messages(history_messages[-PROMPT_HISTORY_MESSAGES:])
+    else:
+        history_block = ""
+
+    document_block = _format_uploaded_documents(session.uploaded_documents)
+    multimodal_contents, unsupported, multimodal_documents = _load_multimodal_contents(session.uploaded_documents, model_config)
+    multimodal_prompt = _multimodal_prompt_header(multimodal_documents)
+    if unsupported:
+        model_label = model_config.label if model_config else (model_name or "selected model")
+        raise ValueError(
+            get_text(
+                'upload_error_multimodal_model_required',
+                LANGUAGE,
+                files=", ".join(unsupported),
+                model=model_label,
+            )
+        )
+
+    sections: list[str] = []
+    if history_block:
+        sections.append(
+            "Use the relevant information from the prior conversation when responding. "
+            "If the history is not relevant, prioritize the latest request.\n\n"
+            f"Conversation history:\n{history_block}"
+        )
+    if document_block:
+        sections.append(
+            "Use the uploaded documents when they are relevant to the latest request. "
+            "If they are not relevant, do not force them into the answer.\n\n"
+            f"{document_block}"
+        )
+    if multimodal_prompt:
+        sections.append(multimodal_prompt)
+
+    sections.append(f"Latest user request:\n{prompt}")
+    prompt_text = "\n\n".join(sections)
+
+    if multimodal_contents:
+        return ChatMessage(role="user", text=prompt_text, contents=multimodal_contents)
+    return prompt_text
+
+
 async def append_session_exchange(mode: str, session_id: str, user_prompt: str, assistant_reply: str) -> None:
     if not assistant_reply.strip():
         return
@@ -761,7 +1072,13 @@ async def append_session_exchange(mode: str, session_id: str, user_prompt: str, 
     await session_store.save_session(mode, session_id)
 
 
-async def generate_execution_plan(prompt: str, mode: str, session_id: str, model_chat_client) -> dict[str, object]:
+async def generate_execution_plan(
+    prompt: str,
+    mode: str,
+    session_id: str,
+    model_name: str | None,
+    model_chat_client,
+) -> dict[str, object]:
     planner_agent = ChatAgent(
         name="Planner",
         chat_client=model_chat_client,
@@ -772,7 +1089,13 @@ async def generate_execution_plan(prompt: str, mode: str, session_id: str, model
             max_tools=PLAN_TOOL_LIMIT,
         ),
     )
-    planner_prompt = await build_prompt_with_history(prompt, mode, session_id)
+    planner_prompt = await build_agent_input(
+        prompt,
+        mode,
+        session_id,
+        model_name,
+        include_history=True,
+    )
     planner_parts: list[str] = []
     async for update in planner_agent.run_stream(planner_prompt):
         if update.text:
@@ -907,9 +1230,15 @@ async def api_stream(request: Request):
         session = await session_store.get_session(MODE_GENERAL, session_id)
         async with session.lock:
             try:
-                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_chat_client)
+                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
-                prompt_with_documents = await build_prompt_with_documents(prompt, MODE_GENERAL, session_id)
+                agent_input = await build_agent_input(
+                    prompt,
+                    MODE_GENERAL,
+                    session_id,
+                    model_name,
+                    include_history=True,
+                )
 
                 # Create a simple agent
                 agent_start = time.time()
@@ -926,17 +1255,19 @@ async def api_stream(request: Request):
                 logger.info(f"[{request_id}] {get_text('log_streaming_start', LANGUAGE, length=len(prompt))}")
                 first_chunk = True
                 chunk_count = 0
-                async for update in simple_agent.run_stream(prompt_with_documents, thread=session.thread):
+                response_parts: list[str] = []
+                async for update in simple_agent.run_stream(agent_input):
                     if update.text:
                         if first_chunk:
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
                             first_chunk = False
                         chunk_count += 1
+                        response_parts.append(update.text)
                         yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
+                await append_session_exchange(MODE_GENERAL, session_id, prompt, "".join(response_parts).strip())
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
-                await session_store.save_session(MODE_GENERAL, session_id)
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
             except Exception as e:
                 logger.exception("[%s] Regular chat stream failed", request_id)
@@ -977,9 +1308,15 @@ async def api_guideline_stream(request: Request):
         async with session.lock:
             trace_token = SEARCH_TRACE_CONTEXT.set([])
             try:
-                plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_chat_client)
+                plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
-                prompt_with_documents = await build_prompt_with_documents(prompt, MODE_GUIDELINE, session_id)
+                agent_input = await build_agent_input(
+                    prompt,
+                    MODE_GUIDELINE,
+                    session_id,
+                    model_name,
+                    include_history=True,
+                )
 
                 # Agent using Azure AI Search tool
                 agent_start = time.time()
@@ -996,12 +1333,14 @@ async def api_guideline_stream(request: Request):
                 logger.info(f"[{request_id}] {get_text('log_streaming_start', LANGUAGE, length=len(prompt))}")
                 first_chunk = True
                 chunk_count = 0
-                async for update in search_agent.run_stream(prompt_with_documents, thread=session.thread):
+                response_parts: list[str] = []
+                async for update in search_agent.run_stream(agent_input):
                     if update.text:
                         if first_chunk:
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
                             first_chunk = False
                         chunk_count += 1
+                        response_parts.append(update.text)
                         yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
                 search_traces = SEARCH_TRACE_CONTEXT.get() or []
@@ -1012,9 +1351,9 @@ async def api_guideline_stream(request: Request):
                 if evidence_items:
                     yield json.dumps({"type": "evidence", "evidence": evidence_items}, ensure_ascii=False) + "\n"
 
+                await append_session_exchange(MODE_GUIDELINE, session_id, prompt, "".join(response_parts).strip())
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
-                await session_store.save_session(MODE_GUIDELINE, session_id)
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
 
             except Exception as e:
@@ -1084,8 +1423,14 @@ async def multi_agent_stream(request: Request):
                 ) + "\n"
                 yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
 
-                workflow_prompt = await build_prompt_with_history(prompt, MODE_GENERAL, session_id)
-                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_chat_client)
+                workflow_prompt = await build_agent_input(
+                    prompt,
+                    MODE_GENERAL,
+                    session_id,
+                    model_name,
+                    include_history=True,
+                )
+                plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
 
                 # Use ConcurrentBuilder to create parallel workflow
@@ -1357,8 +1702,14 @@ async def phase1_planning_stream(request: Request):
 
             logger.info(f"[{request_id}] {get_text('log_board_workflow_built', LANGUAGE, id=workflow_id)}")
 
-            workflow_prompt = await build_prompt_with_history(prompt, MODE_IDOBATA, session_id)
-            plan = await generate_execution_plan(prompt, MODE_IDOBATA, session_id, model_chat_client)
+            workflow_prompt = await build_agent_input(
+                prompt,
+                MODE_IDOBATA,
+                session_id,
+                model_name,
+                include_history=True,
+            )
+            plan = await generate_execution_plan(prompt, MODE_IDOBATA, session_id, model_name, model_chat_client)
             yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
             workflow_exec_start = time.time()
             logger.info(f"[{request_id}] {get_text('log_board_workflow_start', LANGUAGE, length=len(prompt))}")
@@ -1488,21 +1839,26 @@ async def upload_files(
             except Exception as exc:
                 return JSONResponse({"error": str(exc)}, status_code=400)
 
+            normalized_content_type = _normalize_upload_media_type(filename, upload.content_type)
+            kind = _resolve_upload_kind(filename, normalized_content_type)
             normalized_text = extracted_text.strip()
-            if not normalized_text:
+            if not normalized_text and kind == "text":
                 return JSONResponse(
                     {"error": get_text('upload_error_no_text', LANGUAGE, filename=filename)},
                     status_code=400,
                 )
 
             normalized_text = normalized_text[:MAX_UPLOAD_TEXT_CHARS]
+            file_id = uuid4().hex
             document = UploadedDocument(
-                file_id=uuid4().hex,
+                file_id=file_id,
                 name=filename,
-                content_type=upload.content_type or "application/octet-stream",
+                content_type=normalized_content_type,
                 size_bytes=len(data),
                 extracted_text=normalized_text,
-                preview_text=_compact_text(normalized_text, limit=220),
+                preview_text=_compact_text(normalized_text, limit=220) if normalized_text else "",
+                kind=kind,
+                storage_path=_store_uploaded_asset(mode, session_id, file_id, filename, data),
             )
             session.uploaded_documents.append(document)
             uploaded.append(_document_metadata(document))
@@ -1518,12 +1874,13 @@ async def upload_files(
 async def delete_uploaded_file(file_id: str, session_id: str = "default", mode: str = MODE_GENERAL):
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
-        before_count = len(session.uploaded_documents)
+        removed_document = next((document for document in session.uploaded_documents if document.file_id == file_id), None)
+        if removed_document is None:
+            return JSONResponse({"error": get_text('upload_error_file_not_found', LANGUAGE)}, status_code=404)
         session.uploaded_documents = [
             document for document in session.uploaded_documents if document.file_id != file_id
         ]
-        if len(session.uploaded_documents) == before_count:
-            return JSONResponse({"error": get_text('upload_error_file_not_found', LANGUAGE)}, status_code=404)
+        _delete_uploaded_asset(removed_document)
 
         await session_store.save_session(mode, session_id)
         return {"status": "ok", "files": [_document_metadata(document) for document in session.uploaded_documents]}

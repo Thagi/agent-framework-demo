@@ -18,9 +18,10 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Plan visualization**: Each mode shows goal / steps / tools / completion criteria before the answer streams
 - **Approval flow**: Multi-agent analysis, the board workflow, and approval-gated models require `approve / reject / revise` before execution
 - **Execution trace and evidence view**: RAG search shows query, hit count, duration, and supporting document excerpts separately from the answer
-- **File input support**: Attach `.txt / .md / .csv / .json / .pdf / .docx` files in each mode and use them as session context
+- **File input support**: Attach `.txt / .md / .csv / .json / .pdf / .docx / .png / .jpg / .jpeg / .webp / .gif` files in each mode and use them either as text context or as multimodal inputs depending on model capability
 - **Model selection**: The frontend receives the available model list and provider metadata from the backend, so selectable models stay aligned with backend configuration
 - **Conversation memory**: The Backend persists Agent Framework `AgentThread` state to JSON, and the Frontend persists rendered history to JSON, so sessions survive restarts
+- **Gemini switching**: OpenAI / Azure OpenAI / Gemini Developer API / Vertex AI Gemini can be switched per provider
 
 ### Multi-agent analysis (ConcurrentBuilder)
 <img src="./img/004.gif" width="80%" />
@@ -37,7 +38,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
     - Executes agents using Microsoft Agent Framework
     - Persists per-session `AgentThread` state and uploaded-file metadata to JSON, then uses it for follow-up answers
     - Reads provider-aware model settings from `.env`, then exposes the safe model list to the frontend
-    - Calls Azure OpenAI or OpenAI and streams the output back
+    - Calls Azure OpenAI / OpenAI / Gemini Developer API / Vertex AI Gemini and streams the output back
 
 Main call path (example: regular chat):
 
@@ -45,7 +46,7 @@ Main call path (example: regular chat):
 Browser (Fetch streaming)
     -> Frontend: POST /api/chat/stream
         -> Backend: POST /api/stream
-            -> Configured model provider (Azure OpenAI / OpenAI)
+            -> Configured model provider (Azure OpenAI / OpenAI / Gemini / Vertex AI Gemini)
 ```
 
 ## Requirements
@@ -72,13 +73,13 @@ pip install -r .\Frontend\requirements.txt
 
 > `start.ps1` / `start.bat` run servers using the current Python environment. Activate your venv/conda environment before running them.
 
-### 2) Environment variables (Backend: Azure OpenAI / OpenAI)
+### 2) Environment variables (Backend: Azure OpenAI / OpenAI / Gemini / Vertex AI Gemini)
 
 The Backend loads `Backend/.env` at startup.
 Copy `Backend/.env.example` to `Backend/.env` and set the values (**do not commit secrets**).
 
 ```
-LLM_MODELS=openai-gpt-4-1-mini,openai-gpt-4-1-nano,openai-gpt-4-1,openai-gpt-5-mini,openai-gpt-5-nano,openai-gpt-5
+LLM_MODELS=openai-gpt-4-1-mini,openai-gpt-4-1-nano,openai-gpt-4-1,openai-gpt-5-mini,openai-gpt-5-nano,openai-gpt-5,gemini-2-5-flash,vertex-gemini-2-5-flash
 DEFAULT_MODEL=openai-gpt-4-1-mini
 
 LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER=openai
@@ -108,6 +109,24 @@ LLM_MODEL_OPENAI_GPT_5_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_5_API_KEY=...
 LLM_MODEL_OPENAI_GPT_5_MODEL_ID=gpt-5
 
+LLM_MODEL_GEMINI_2_5_FLASH_PROVIDER=gemini
+LLM_MODEL_GEMINI_2_5_FLASH_LABEL=Gemini 2.5 Flash (Gemini API)
+LLM_MODEL_GEMINI_2_5_FLASH_API_KEY=...
+LLM_MODEL_GEMINI_2_5_FLASH_MODEL_ID=gemini-2.5-flash
+LLM_MODEL_GEMINI_2_5_FLASH_SUPPORTS_MULTIMODAL=true
+LLM_MODEL_GEMINI_2_5_FLASH_SUPPORTS_IMAGE_INPUT=true
+LLM_MODEL_GEMINI_2_5_FLASH_SUPPORTS_PDF_INPUT=true
+
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_PROVIDER=vertex_gemini
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_LABEL=Gemini 2.5 Flash (Vertex AI)
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_MODEL_ID=gemini-2.5-flash
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_PROJECT=your-gcp-project
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_LOCATION=us-central1
+# LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_CREDENTIALS_PATH=/path/to/service-account.json
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_SUPPORTS_MULTIMODAL=true
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_SUPPORTS_IMAGE_INPUT=true
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_SUPPORTS_PDF_INPUT=true
+
 # Optional for OpenAI-compatible gateways:
 # LLM_MODEL_OPENAI_GPT_4_1_MINI_ENDPOINT=https://api.openai.com/v1
 # LLM_MODEL_OPENAI_GPT_4_1_MINI_ORG_ID=org_xxx
@@ -124,17 +143,23 @@ Per-model required fields:
 
 - `azure`: `PROVIDER`, `API_KEY`, `ENDPOINT`, `DEPLOYMENT`
 - `openai`: `PROVIDER`, `API_KEY`, `MODEL_ID`
+- `gemini`: `PROVIDER`, `API_KEY`, `MODEL_ID`
+- `vertex_gemini`: `PROVIDER`, `MODEL_ID`, `PROJECT`, `LOCATION`
 
 Notes:
 
 - `LLM_MODELS` defines the model aliases exposed to the frontend; use unique aliases if you want to expose both Azure and OpenAI variants of the same model family.
 - `DEFAULT_MODEL` must match one of the aliases in `LLM_MODELS`.
 - `ENDPOINT` is required for Azure and optional for OpenAI. For OpenAI, `ENDPOINT` is treated as the API base URL.
-- `API_VERSION` is used only for Azure-backed models.
+- `ENDPOINT` is also optional for Gemini / Vertex AI Gemini. Leave it unset if you want the SDK default endpoint.
+- `API_VERSION` is optional for Azure / Gemini / Vertex AI Gemini.
 - `REQUIRES_APPROVAL=true` makes the frontend show an approval dialog before that model is used.
 - `APPROVAL_REASON` is shown as-is in the approval dialog.
 - With aliases such as `openai-gpt-5-mini`, the env prefix becomes `LLM_MODEL_OPENAI_GPT_5_MINI_*`.
+- `SUPPORTS_MULTIMODAL=true` exposes the model to the frontend as PDF/image-capable. Use `SUPPORTS_IMAGE_INPUT=true` and `SUPPORTS_PDF_INPUT=true` for more granular control.
+- Vertex AI Gemini uses the `google-genai` SDK. If `CREDENTIALS_PATH` is omitted, configure Application Default Credentials ahead of time.
 - `BACKEND_SESSION_STORE_PATH` overrides where backend conversation history and uploaded-file metadata are stored. The default is `Backend/data/backend_sessions`.
+- `BACKEND_UPLOAD_STORE_PATH` overrides where uploaded PDF/image assets are stored. The default is `Backend/data/backend_upload_assets`.
 
 (Optional) If you use Azure AI Search (RAG search):
 
@@ -157,11 +182,13 @@ Note: the Backend reads `LANGUAGE` at startup, so you need to restart the Backen
 
 File input limits:
 
-- Supported types: `.txt`, `.md`, `.csv`, `.json`, `.pdf`, `.docx`
+- Supported types: `.txt`, `.md`, `.csv`, `.json`, `.pdf`, `.docx`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
 - Max attachments per session: `MAX_UPLOAD_FILES`
 - Max size per file: `MAX_UPLOAD_FILE_SIZE_BYTES`
 - Max extracted text retained per file: `MAX_UPLOAD_TEXT_CHARS`
 - Max attached text injected into prompts: `MAX_PROMPT_DOCUMENT_CHARS`
+- PDF/image files are sent as multimodal inputs when the selected model exposes `SUPPORTS_PDF_INPUT` / `SUPPORTS_IMAGE_INPUT`
+- If text can be extracted from a PDF, text-only models can still use the extracted excerpt as context
 
 (Optional) Legacy Azure-only env formats are still supported as fallbacks for existing setups:
 

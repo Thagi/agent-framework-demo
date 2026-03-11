@@ -67,6 +67,13 @@ const translations = {
         'idobata_button': 'AI役員会議',
         'attach_button': '添付',
         'attachment_remove': '添付を削除',
+        'attachment_chars': '{count} 文字',
+        'attachment_kind_text': 'テキスト',
+        'attachment_kind_pdf': 'PDF',
+        'attachment_kind_image': '画像',
+        'attachment_multimodal_ready': 'マルチモーダル可',
+        'model_capability_multimodal': 'マルチモーダル',
+        'model_capability_text_only': 'テキスト中心',
 
         // Status
         'status_thinking': 'AI が考え中...',
@@ -187,6 +194,13 @@ const translations = {
         'idobata_button': 'AI Board Meeting',
         'attach_button': 'Attach',
         'attachment_remove': 'Remove attachment',
+        'attachment_chars': '{count} chars',
+        'attachment_kind_text': 'text',
+        'attachment_kind_pdf': 'pdf',
+        'attachment_kind_image': 'image',
+        'attachment_multimodal_ready': 'multimodal ready',
+        'model_capability_multimodal': 'multimodal',
+        'model_capability_text_only': 'text-first',
 
         // Status
         'status_thinking': 'AI is thinking...',

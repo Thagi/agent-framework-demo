@@ -162,10 +162,12 @@ function normalizeAttachment(item) {
     return {
         id,
         name,
+        kind: typeof item.kind === 'string' ? item.kind : 'text',
         content_type: typeof item.content_type === 'string' ? item.content_type : '',
         size_bytes: Number.isFinite(item.size_bytes) ? item.size_bytes : 0,
         preview_text: typeof item.preview_text === 'string' ? item.preview_text : '',
-        text_length: Number.isFinite(item.text_length) ? item.text_length : 0
+        text_length: Number.isFinite(item.text_length) ? item.text_length : 0,
+        supports_multimodal: !!item.supports_multimodal
     };
 }
 
@@ -186,7 +188,13 @@ function renderAttachmentList(context) {
 
         const meta = document.createElement('div');
         meta.className = 'attachment-chip-meta';
-        meta.textContent = `${formatBytes(item.size_bytes)} / ${item.text_length} chars`;
+        const metaParts = [formatBytes(item.size_bytes), t(`attachment_kind_${item.kind}`)];
+        if (item.text_length > 0) {
+            metaParts.push(tf('attachment_chars', { count: item.text_length }));
+        } else if (item.supports_multimodal) {
+            metaParts.push(t('attachment_multimodal_ready'));
+        }
+        meta.textContent = metaParts.join(' / ');
 
         main.appendChild(name);
         main.appendChild(meta);
@@ -308,8 +316,15 @@ function renderModelSelects() {
             if (model.target) {
                 option.dataset.target = model.target;
             }
+            option.dataset.multimodal = model.supports_multimodal ? 'true' : 'false';
+            option.dataset.imageInput = model.supports_image_input ? 'true' : 'false';
+            option.dataset.pdfInput = model.supports_pdf_input ? 'true' : 'false';
             if (model.provider_label || model.target) {
-                const details = [model.provider_label, model.target].filter(Boolean).join(': ');
+                const details = [
+                    model.provider_label,
+                    model.target,
+                    model.supports_multimodal ? t('model_capability_multimodal') : t('model_capability_text_only')
+                ].filter(Boolean).join(' / ');
                 option.title = details;
             }
             if (previousValue && previousValue === model.id) {

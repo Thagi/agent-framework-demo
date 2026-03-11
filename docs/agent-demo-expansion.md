@@ -20,6 +20,8 @@ The current demo already covers:
 - role-based group discussion
 - per-session conversation memory
 - backend-driven model configuration
+- model switching across OpenAI / Azure OpenAI / Gemini / Vertex AI Gemini
+- multimodal inputs including PDF and image files
 - `podman-compose` startup
 
 ## Delivery Status
@@ -31,7 +33,7 @@ Work is being implemented in priority order. As of March 11, 2026, the status is
 | Task decomposition and plan visualization | Implemented | Visible plan panels are available in regular chat, multi-agent analysis, RAG, and the board workflow |
 | Human-in-the-loop approval | Implemented | Approve / reject / revise is shown for multi-agent analysis, board workflow, and approval-gated models |
 | Tool trace and evidence view | Implemented (RAG-first) | RAG search now shows search traces and document evidence separately from the answer |
-| File input support | Implemented | Each mode can attach `.txt/.md/.csv/.json/.pdf/.docx` files and use them as session context |
+| File input support | Implemented | Each mode can attach `.txt/.md/.csv/.json/.pdf/.docx/.png/.jpg/.jpeg/.webp/.gif` files and use them as text context or multimodal input |
 | Persistent memory | Implemented (JSON-first) | The backend persists `AgentThread` plus attachment metadata, the frontend persists rendered history, and `podman-compose` keeps both via named volumes |
 
 That means the next step is not "can it answer?", but "can it plan, act, explain, and be governed?"
@@ -114,6 +116,12 @@ Allow the user to upload files for analysis:
 Why it matters:
 
 - it raises the demo from chat to real task support
+
+Implementation direction:
+
+- persist uploaded files in the backend and extract text where possible
+- pass original PDF/image assets to multimodal-capable models
+- inject extracted content into thread memory or attachment context
 
 ### Phase 2
 

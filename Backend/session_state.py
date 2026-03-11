@@ -38,6 +38,8 @@ class UploadedDocument:
     size_bytes: int
     extracted_text: str
     preview_text: str
+    kind: str = "text"
+    storage_path: str | None = None
 
 
 @dataclass
@@ -88,6 +90,8 @@ class SessionStore:
             "size_bytes": document.size_bytes,
             "extracted_text": document.extracted_text,
             "preview_text": document.preview_text,
+            "kind": document.kind,
+            "storage_path": document.storage_path,
         }
 
     def _deserialize_document(self, payload: dict) -> UploadedDocument:
@@ -98,6 +102,8 @@ class SessionStore:
             size_bytes=int(payload.get("size_bytes", 0)),
             extracted_text=payload.get("extracted_text", ""),
             preview_text=payload.get("preview_text", ""),
+            kind=payload.get("kind", "text"),
+            storage_path=payload.get("storage_path"),
         )
 
     def _load_persisted_session(self, mode: str, session_id: str) -> SessionState | None:
@@ -160,8 +166,21 @@ class SessionStore:
 
     async def clear_session(self, mode: str, session_id: str) -> None:
         key = (mode, session_id)
+        persisted = None
         async with self._guard:
-            self._sessions.pop(key, None)
+            persisted = self._sessions.pop(key, None)
         path = self._session_path(mode, session_id)
+        if persisted is None:
+            persisted = self._load_persisted_session(mode, session_id)
+        if persisted is not None:
+            for document in persisted.uploaded_documents:
+                if not document.storage_path:
+                    continue
+                asset_path = Path(document.storage_path)
+                if asset_path.exists():
+                    asset_path.unlink()
+                parent = asset_path.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
         if path.exists():
             path.unlink()

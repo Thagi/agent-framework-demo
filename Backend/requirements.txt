@@ -19,3 +19,6 @@ azure-identity
 
 # OpenAI (included as dependency of agent-framework)
 openai
+
+# Gemini / Vertex AI
+google-genai

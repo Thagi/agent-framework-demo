@@ -18,9 +18,10 @@
 - **計画可視化**: 各モードで回答前の goal / steps / tools / completion criteria を表示
 - **承認フロー**: マルチエージェント分析 / AI役員会議 / 承認対象モデルの実行前に `approve / reject / revise` を要求
 - **実行ログと根拠表示**: RAG検索で検索語・結果件数・所要時間・参照文書の抜粋を回答と分離して表示
-- **ファイル入力対応**: `.txt / .md / .csv / .json / .pdf / .docx` を各モードへ添付し、セッション文脈として回答に反映
+- **ファイル入力対応**: `.txt / .md / .csv / .json / .pdf / .docx / .png / .jpg / .jpeg / .webp / .gif` を各モードへ添付し、モデル能力に応じてテキスト文脈またはマルチモーダル入力として回答へ反映
 - **モデル選択**: Frontend は Backend から利用可能モデル一覧と provider 情報を受け取り、選択肢を Backend 設定と自動的に揃える
 - **会話履歴メモリ**: BackendがAgent Frameworkの`AgentThread`をJSONへ永続化し、Frontendの表示履歴もJSONへ保持するため再起動後も継続会話できる
+- **Gemini切替対応**: OpenAI / Azure OpenAI / Gemini Developer API / Vertex AI Gemini を provider 単位で切り替え可能
 
 
 ### マルチエージェント分析（ConcurrentBuilder）
@@ -38,7 +39,7 @@
     - Microsoft Agent Frameworkを使ってエージェント実行
     - セッション単位で`AgentThread`と添付ファイル情報をJSONへ永続化し、会話履歴を次の回答へ反映
     - `.env` の provider 別モデル設定を読み込み、安全なモデル一覧だけを Frontend に公開
-    - Azure OpenAI または OpenAI を呼び出し、結果をストリーミング返却
+    - Azure OpenAI / OpenAI / Gemini Developer API / Vertex AI Gemini を呼び出し、結果をストリーミング返却
 
 主要な呼び出し経路（例: 通常チャット）:
 
@@ -46,7 +47,7 @@
 Browser (Fetch streaming)
     -> Frontend: POST /api/chat/stream
         -> Backend: POST /api/stream
-            -> 設定済みモデル provider（Azure OpenAI / OpenAI）
+            -> 設定済みモデル provider（Azure OpenAI / OpenAI / Gemini / Vertex AI Gemini）
 ```
 
 ## 必要要件
@@ -73,13 +74,13 @@ pip install -r .\Frontend\requirements.txt
 
 > `start.ps1` / `start.bat` は、現在のPython実行環境でそのまま起動します。実行前に venv/conda などの環境を有効化してください。
 
-### 2) 環境変数（Backend: Azure OpenAI / OpenAI）
+### 2) 環境変数（Backend: Azure OpenAI / OpenAI / Gemini / Vertex AI Gemini）
 
 Backendは起動時に`Backend/.env`を読み込みます。
 `Backend/.env.example` を `Backend/.env` にコピーして値を設定してください（**秘密情報はコミットしない**）。
 
 ```
-LLM_MODELS=openai-gpt-4-1-mini,openai-gpt-4-1-nano,openai-gpt-4-1,openai-gpt-5-mini,openai-gpt-5-nano,openai-gpt-5
+LLM_MODELS=openai-gpt-4-1-mini,openai-gpt-4-1-nano,openai-gpt-4-1,openai-gpt-5-mini,openai-gpt-5-nano,openai-gpt-5,gemini-2-5-flash,vertex-gemini-2-5-flash
 DEFAULT_MODEL=openai-gpt-4-1-mini
 
 LLM_MODEL_OPENAI_GPT_4_1_MINI_PROVIDER=openai
@@ -109,6 +110,24 @@ LLM_MODEL_OPENAI_GPT_5_PROVIDER=openai
 LLM_MODEL_OPENAI_GPT_5_API_KEY=...
 LLM_MODEL_OPENAI_GPT_5_MODEL_ID=gpt-5
 
+LLM_MODEL_GEMINI_2_5_FLASH_PROVIDER=gemini
+LLM_MODEL_GEMINI_2_5_FLASH_LABEL=Gemini 2.5 Flash (Gemini API)
+LLM_MODEL_GEMINI_2_5_FLASH_API_KEY=...
+LLM_MODEL_GEMINI_2_5_FLASH_MODEL_ID=gemini-2.5-flash
+LLM_MODEL_GEMINI_2_5_FLASH_SUPPORTS_MULTIMODAL=true
+LLM_MODEL_GEMINI_2_5_FLASH_SUPPORTS_IMAGE_INPUT=true
+LLM_MODEL_GEMINI_2_5_FLASH_SUPPORTS_PDF_INPUT=true
+
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_PROVIDER=vertex_gemini
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_LABEL=Gemini 2.5 Flash (Vertex AI)
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_MODEL_ID=gemini-2.5-flash
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_PROJECT=your-gcp-project
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_LOCATION=us-central1
+# LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_CREDENTIALS_PATH=/path/to/service-account.json
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_SUPPORTS_MULTIMODAL=true
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_SUPPORTS_IMAGE_INPUT=true
+LLM_MODEL_VERTEX_GEMINI_2_5_FLASH_SUPPORTS_PDF_INPUT=true
+
 # OpenAI 互換ゲートウェイを使う場合は任意で設定:
 # LLM_MODEL_OPENAI_GPT_4_1_MINI_ENDPOINT=https://api.openai.com/v1
 # LLM_MODEL_OPENAI_GPT_4_1_MINI_ORG_ID=org_xxx
@@ -125,17 +144,23 @@ provider ごとの必須項目:
 
 - `azure`: `PROVIDER`, `API_KEY`, `ENDPOINT`, `DEPLOYMENT`
 - `openai`: `PROVIDER`, `API_KEY`, `MODEL_ID`
+- `gemini`: `PROVIDER`, `API_KEY`, `MODEL_ID`
+- `vertex_gemini`: `PROVIDER`, `MODEL_ID`, `PROJECT`, `LOCATION`
 
 補足:
 
 - `LLM_MODELS` は Frontend に公開するモデル別名の一覧です。同じモデル系統を Azure/OpenAI の両方で出したい場合は、別名を重複しないようにしてください。
 - `DEFAULT_MODEL` は `LLM_MODELS` に含まれる別名を指定してください。
 - `ENDPOINT` は Azure では必須、OpenAI では任意です。OpenAI では API の base URL として扱います。
-- `API_VERSION` は Azure モデルでのみ利用します。
+- `ENDPOINT` は Gemini / Vertex AI Gemini でも任意です。SDK 既定の接続先を使う場合は不要です。
+- `API_VERSION` は Azure / Gemini / Vertex AI Gemini で任意です。
 - `REQUIRES_APPROVAL=true` を付けると、そのモデル選択時に Frontend で承認ダイアログを表示します。
 - `APPROVAL_REASON` を設定すると、承認ダイアログへ理由をそのまま表示します。
 - `openai-gpt-5-mini` のような別名を使う場合、env の接頭辞は `LLM_MODEL_OPENAI_GPT_5_MINI_*` になります。
+- `SUPPORTS_MULTIMODAL=true` にすると、そのモデルを PDF / 画像入力対応として Frontend に公開します。画像は `SUPPORTS_IMAGE_INPUT=true`、PDF は `SUPPORTS_PDF_INPUT=true` で個別制御できます。
+- Vertex AI Gemini は `google-genai` SDK を通して接続します。`CREDENTIALS_PATH` を省略する場合は、Application Default Credentials を事前に構成してください。
 - `BACKEND_SESSION_STORE_PATH` を指定すると、Backend の会話履歴と添付ファイルメタデータの保存先を変更できます。省略時は `Backend/data/backend_sessions` です。
+- `BACKEND_UPLOAD_STORE_PATH` を指定すると、PDF / 画像の原本を保存する場所を変更できます。省略時は `Backend/data/backend_upload_assets` です。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 
@@ -158,11 +183,13 @@ LANGUAGE=en
 
 ファイル入力の制限:
 
-- 対応形式: `.txt`, `.md`, `.csv`, `.json`, `.pdf`, `.docx`
+- 対応形式: `.txt`, `.md`, `.csv`, `.json`, `.pdf`, `.docx`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`
 - セッションごとの最大添付数: `MAX_UPLOAD_FILES`
 - 1ファイルあたりの最大サイズ: `MAX_UPLOAD_FILE_SIZE_BYTES`
 - 抽出テキストの保持上限: `MAX_UPLOAD_TEXT_CHARS`
 - プロンプトへ注入する添付テキスト上限: `MAX_PROMPT_DOCUMENT_CHARS`
+- PDF / 画像は、選択中モデルが `SUPPORTS_PDF_INPUT` / `SUPPORTS_IMAGE_INPUT` を持つ場合にマルチモーダル入力として送信されます
+- PDF からテキスト抽出できた場合は、テキスト専用モデルでもその抜粋を文脈として利用できます
 
 （任意）既存環境向けの Azure 専用旧形式 env もフォールバックとして引き続き利用できます:
 
