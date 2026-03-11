@@ -160,6 +160,7 @@ Notes:
 - Vertex AI Gemini uses the `google-genai` SDK. If `CREDENTIALS_PATH` is omitted, configure Application Default Credentials ahead of time.
 - `BACKEND_SESSION_STORE_PATH` overrides where backend conversation history and uploaded-file metadata are stored. The default is `Backend/data/backend_sessions`.
 - `BACKEND_UPLOAD_STORE_PATH` overrides where uploaded PDF/image assets are stored. The default is `Backend/data/backend_upload_assets`.
+- `PLAN_TIMEOUT_SECONDS` controls how long the pre-answer planner is allowed to run. On timeout, the backend falls back to a default plan and continues with the main answer.
 
 (Optional) If you use Azure AI Search (RAG search):
 

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import time
@@ -65,6 +66,7 @@ SESSION_HISTORY_MESSAGES = max(int(os.getenv("SESSION_HISTORY_MESSAGES", "20")),
 PROMPT_HISTORY_MESSAGES = max(int(os.getenv("PROMPT_HISTORY_MESSAGES", "8")), 2)
 PLAN_STEP_LIMIT = max(int(os.getenv("PLAN_STEP_LIMIT", "4")), 2)
 PLAN_TOOL_LIMIT = max(int(os.getenv("PLAN_TOOL_LIMIT", "4")), 1)
+PLAN_TIMEOUT_SECONDS = max(float(os.getenv("PLAN_TIMEOUT_SECONDS", "20")), 1.0)
 MODE_GENERAL = "general"
 MODE_GUIDELINE = "guideline"
 MODE_IDOBATA = "idobata"
@@ -1096,12 +1098,22 @@ async def generate_execution_plan(
         model_name,
         include_history=True,
     )
-    planner_parts: list[str] = []
-    async for update in planner_agent.run_stream(planner_prompt):
-        if update.text:
-            planner_parts.append(update.text)
 
-    return _extract_plan_payload("".join(planner_parts), prompt)
+    async def _run_planner() -> dict[str, object]:
+        planner_parts: list[str] = []
+        async for update in planner_agent.run_stream(planner_prompt):
+            if update.text:
+                planner_parts.append(update.text)
+        return _extract_plan_payload("".join(planner_parts), prompt)
+
+    try:
+        return await asyncio.wait_for(_run_planner(), timeout=PLAN_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.warning("Planner timed out after %.1fs for model '%s'. Falling back to default plan.", PLAN_TIMEOUT_SECONDS, model_name)
+        return _fallback_execution_plan(prompt)
+    except Exception:
+        logger.exception("Planner failed for model '%s'. Falling back to default plan.", model_name)
+        return _fallback_execution_plan(prompt)
 
 
 def search_tool(
@@ -1230,6 +1242,7 @@ async def api_stream(request: Request):
         session = await session_store.get_session(MODE_GENERAL, session_id)
         async with session.lock:
             try:
+                yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
                 plan = await generate_execution_plan(prompt, MODE_GENERAL, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
                 agent_input = await build_agent_input(
@@ -1308,6 +1321,7 @@ async def api_guideline_stream(request: Request):
         async with session.lock:
             trace_token = SEARCH_TRACE_CONTEXT.set([])
             try:
+                yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
                 plan = await generate_execution_plan(prompt, MODE_GUIDELINE, session_id, model_name, model_chat_client)
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
                 agent_input = await build_agent_input(

@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['BACKEND_URL'] = os.getenv('BACKEND_URL', 'http://localhost:8000')
 app.config['LANGUAGE'] = os.getenv('LANGUAGE', 'ja')
+STREAMING_PROXY_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=60.0, pool=60.0)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -277,7 +278,7 @@ def chat_stream():
         try:
             backend_request_start = time.time()
             logger.info(f"[{request_id}] {front_text('log_front_send_backend', model=model)}")
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=STREAMING_PROXY_TIMEOUT) as client:
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/stream",
@@ -365,7 +366,7 @@ def guideline_stream():
         trace_payloads = []
         evidence_payload = []
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=STREAMING_PROXY_TIMEOUT) as client:
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/rag/stream",
@@ -462,7 +463,7 @@ def multi_agent_stream():
             logger.info(f"[{request_id}] {front_text('log_front_send_multi_backend', model=model)}")
             first_response = True
             line_count = 0
-            with httpx.Client(timeout=120.0) as client:
+            with httpx.Client(timeout=STREAMING_PROXY_TIMEOUT) as client:
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/multi-agent-stream",
@@ -561,7 +562,7 @@ def idobata_stream():
             )
             first_response = True
             line_count = 0
-            with httpx.Client(timeout=180.0) as client:
+            with httpx.Client(timeout=STREAMING_PROXY_TIMEOUT) as client:
                 with client.stream(
                     'POST',
                     f"{app.config['BACKEND_URL']}/api/phase1/stream",

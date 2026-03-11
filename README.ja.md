@@ -161,6 +161,7 @@ provider ごとの必須項目:
 - Vertex AI Gemini は `google-genai` SDK を通して接続します。`CREDENTIALS_PATH` を省略する場合は、Application Default Credentials を事前に構成してください。
 - `BACKEND_SESSION_STORE_PATH` を指定すると、Backend の会話履歴と添付ファイルメタデータの保存先を変更できます。省略時は `Backend/data/backend_sessions` です。
 - `BACKEND_UPLOAD_STORE_PATH` を指定すると、PDF / 画像の原本を保存する場所を変更できます。省略時は `Backend/data/backend_upload_assets` です。
+- `PLAN_TIMEOUT_SECONDS` は回答前の plan 生成に使う上限秒数です。タイムアウト時は fallback plan に切り替えて本回答を継続します。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 
