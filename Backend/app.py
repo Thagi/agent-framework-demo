@@ -26,6 +26,7 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.models import QueryType
 from session_state import SessionStore, UploadedDocument
+from access_control import AccessRegistry
 from audit_state import AuditStore, AuditEvent
 from job_state import JobStore, utcnow_iso
 from translations import get_text
@@ -88,6 +89,7 @@ session_store = SessionStore(
     max_messages=SESSION_HISTORY_MESSAGES,
     store_dir=os.getenv("BACKEND_SESSION_STORE_PATH", "data/backend_sessions"),
 )
+access_registry = AccessRegistry()
 job_store = JobStore(store_dir=os.getenv("BACKEND_JOB_STORE_PATH", "data/backend_jobs"))
 audit_store = AuditStore(store_dir=os.getenv("BACKEND_AUDIT_STORE_PATH", "data/backend_audit"))
 JOB_TASKS: dict[str, asyncio.Task] = {}
@@ -662,6 +664,26 @@ def get_context_mode(body: dict, default_mode: str) -> str:
     return mode if mode in CONTEXT_ALLOWED_MODES else default_mode
 
 
+def get_requested_user_id(data: dict | Any) -> str | None:
+    raw_value = data.get("user_id") if hasattr(data, "get") else None
+    value = str(raw_value or "").strip()
+    return value or None
+
+
+def get_requested_workspace_id(data: dict | Any) -> str | None:
+    raw_value = data.get("workspace_id") if hasattr(data, "get") else None
+    value = str(raw_value or "").strip()
+    return value or None
+
+
+def resolve_access_context(data: dict | Any, *, client_session_id: str):
+    return access_registry.resolve(
+        user_id=get_requested_user_id(data),
+        workspace_id=get_requested_workspace_id(data),
+        client_session_id=client_session_id,
+    )
+
+
 def _normalize_token_value(value: object) -> int | None:
     if value is None:
         return None
@@ -887,6 +909,8 @@ async def _record_audit_event(
     mode: str,
     session_id: str,
     session_mode: str | None = None,
+    user_id: str,
+    workspace_id: str,
     model_name: str | None,
     prompt: str,
     response_text: str,
@@ -916,6 +940,8 @@ async def _record_audit_event(
         mode=mode,
         session_id=session_id,
         model_name=model_name or (model_config.model_id if model_config else "-"),
+        user_id=user_id,
+        workspace_id=workspace_id,
         provider=model_config.provider if model_config else None,
         target=model_config.target_name if model_config else None,
         status=status,
@@ -1668,6 +1694,8 @@ def _serialize_job(job, *, include_result: bool = False) -> dict[str, Any]:
         "session_id": job.session_id,
         "model_name": job.model_name,
         "prompt": job.prompt,
+        "user_id": job.user_id,
+        "workspace_id": job.workspace_id,
         "tone": job.tone,
         "status": job.status,
         "progress_stage": job.progress_stage,
@@ -2249,7 +2277,17 @@ async def _run_idobata_job(
         }
 
 
-async def _run_background_job(job_id: str, mode: str, session_id: str, model_name: str, prompt: str, tone: str | None) -> None:
+async def _run_background_job(
+    job_id: str,
+    mode: str,
+    session_id: str,
+    model_name: str,
+    prompt: str,
+    tone: str | None,
+    *,
+    user_id: str,
+    workspace_id: str,
+) -> None:
     try:
         await _set_job_progress(job_id, "planning")
         model_chat_client = get_chat_client_for_model(model_name)
@@ -2276,6 +2314,8 @@ async def _run_background_job(job_id: str, mode: str, session_id: str, model_nam
             request_id=job_id,
             mode=mode,
             session_id=session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
             model_name=model_name,
             prompt=prompt,
             response_text=response_text,
@@ -2308,6 +2348,8 @@ async def _run_background_job(job_id: str, mode: str, session_id: str, model_nam
             request_id=job_id,
             mode=mode,
             session_id=session_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
             model_name=model_name,
             prompt=prompt,
             response_text="",
@@ -2436,7 +2478,7 @@ async def api_stream(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
-    session_id = get_session_id(body)
+    client_session_id = get_session_id(body)
     context_mode = get_context_mode(body, MODE_GENERAL)
     route_mode = str(body.get("route_mode", "") or "").strip() or None
     route_confidence = body.get("route_confidence")
@@ -2452,6 +2494,12 @@ async def api_stream(request: Request):
         route_confidence = None
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
+
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     
     if not prompt:
         return JSONResponse({"error": "prompt required"}, status_code=400)
@@ -2539,6 +2587,8 @@ async def api_stream(request: Request):
                     request_id=request_id,
                     mode=context_mode,
                     session_id=session_id,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text=answer_text,
@@ -2563,6 +2613,8 @@ async def api_stream(request: Request):
                     request_id=request_id,
                     mode=context_mode,
                     session_id=session_id,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text="",
@@ -2590,7 +2642,7 @@ async def api_guideline_stream(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
-    session_id = get_session_id(body, "guideline")
+    client_session_id = get_session_id(body, "guideline")
     context_mode = get_context_mode(body, MODE_GUIDELINE)
     route_mode = str(body.get("route_mode", "") or "").strip() or None
     route_confidence = body.get("route_confidence")
@@ -2600,6 +2652,12 @@ async def api_guideline_stream(request: Request):
         route_confidence = None
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
+
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     
     if not prompt:
         return JSONResponse({"error": "prompt required"}, status_code=400)
@@ -2698,6 +2756,8 @@ async def api_guideline_stream(request: Request):
                     request_id=request_id,
                     mode=context_mode,
                     session_id=session_id,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text=answer_text,
@@ -2726,6 +2786,8 @@ async def api_guideline_stream(request: Request):
                     request_id=request_id,
                     mode=context_mode,
                     session_id=session_id,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text="",
@@ -2753,10 +2815,16 @@ async def multi_agent_stream(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
-    session_id = get_session_id(body)
+    client_session_id = get_session_id(body)
     context_mode = get_context_mode(body, MODE_GENERAL)
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
+
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     
     if not prompt:
         return JSONResponse({"error": "prompt required"}, status_code=400)
@@ -2932,6 +3000,8 @@ Positive perspective:
                     mode=ROUTE_MODE_MULTI_AGENT,
                     session_id=session_id,
                     session_mode=context_mode,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text=assistant_summary,
@@ -2961,6 +3031,8 @@ Positive perspective:
                     mode=ROUTE_MODE_MULTI_AGENT,
                     session_id=session_id,
                     session_mode=context_mode,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text="",
@@ -2992,7 +3064,7 @@ async def phase1_planning_stream(request: Request):
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
     tone = body.get("tone", "balanced")
-    session_id = get_session_id(body, "idobata")
+    client_session_id = get_session_id(body, "idobata")
     context_mode = get_context_mode(body, MODE_IDOBATA)
     route_mode = str(body.get("route_mode", "") or "").strip() or None
     route_confidence = body.get("route_confidence")
@@ -3003,6 +3075,12 @@ async def phase1_planning_stream(request: Request):
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     logger.info(f"[{request_id}] {get_text('log_tone_setting', LANGUAGE, tone=tone)}")
+
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
 
     if not prompt:
         return JSONResponse({"error": "prompt required"}, status_code=400)
@@ -3254,6 +3332,8 @@ async def phase1_planning_stream(request: Request):
                     request_id=request_id,
                     mode=context_mode,
                     session_id=session_id,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text=assistant_summary,
@@ -3280,6 +3360,8 @@ async def phase1_planning_stream(request: Request):
                     request_id=request_id,
                     mode=context_mode,
                     session_id=session_id,
+                    user_id=access_context.user_id,
+                    workspace_id=access_context.workspace_id,
                     model_name=model_name,
                     prompt=prompt,
                     response_text="",
@@ -3304,18 +3386,29 @@ async def get_models():
     }
 
 
+@app.get("/api/access/bootstrap")
+async def get_access_bootstrap():
+    return access_registry.bootstrap_payload()
+
+
 @app.post("/api/route")
 async def route_request(request: Request):
     body = await request.json()
     prompt = body.get("prompt", "")
     model_name = get_requested_model_name(body)
-    session_id = get_session_id(body)
+    client_session_id = get_session_id(body)
     context_mode = get_context_mode(body, MODE_GENERAL)
 
     if not prompt:
         return JSONResponse({"error": "prompt required"}, status_code=400)
 
     logger.info(get_text('log_route_request', LANGUAGE, model=model_name))
+
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
 
     model_chat_client = get_chat_client_for_model(model_name)
     if model_chat_client is None:
@@ -3332,16 +3425,34 @@ async def route_request(request: Request):
 
 
 @app.get("/api/jobs")
-async def list_jobs(limit: int = 30):
-    jobs = await job_store.list_jobs(limit=max(1, min(limit, 100)))
+async def list_jobs(request: Request, limit: int = 30, session_id: str | None = None):
+    try:
+        access_context = resolve_access_context(request.query_params, client_session_id=session_id or "jobs")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+    effective_session_id = access_context.effective_session_id if session_id else None
+    jobs = await job_store.list_jobs(
+        session_id=effective_session_id,
+        user_id=access_context.user_id,
+        workspace_id=access_context.workspace_id,
+        limit=max(1, min(limit, 100)),
+    )
     return {"jobs": [_serialize_job(job) for job in jobs]}
 
 
 @app.get("/api/jobs/{job_id}")
-async def get_job(job_id: str):
+async def get_job(job_id: str, request: Request):
+    try:
+        access_context = resolve_access_context(request.query_params, client_session_id="jobs")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     job = await job_store.get_job(job_id)
     if job is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
+    if job.user_id != access_context.user_id or job.workspace_id != access_context.workspace_id:
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     return _serialize_job(job, include_result=True)
 
 
@@ -3356,8 +3467,13 @@ async def create_job(request: Request):
         return JSONResponse({"error": "prompt required"}, status_code=400)
 
     model_name = get_requested_model_name(body)
-    session_id = get_session_id(body, _default_session_id_for_mode(mode))
+    client_session_id = get_session_id(body, _default_session_id_for_mode(mode))
     tone = body.get("tone", "balanced") if mode == MODE_IDOBATA else None
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
 
     job_id = f"job_{uuid4().hex}"
     job = await job_store.create_job(
@@ -3366,34 +3482,66 @@ async def create_job(request: Request):
         session_id=session_id,
         model_name=model_name,
         prompt=prompt,
+        user_id=access_context.user_id,
+        workspace_id=access_context.workspace_id,
         tone=tone,
     )
 
-    task = asyncio.create_task(_run_background_job(job_id, mode, session_id, model_name, prompt, tone))
+    task = asyncio.create_task(
+        _run_background_job(
+            job_id,
+            mode,
+            session_id,
+            model_name,
+            prompt,
+            tone,
+            user_id=access_context.user_id,
+            workspace_id=access_context.workspace_id,
+        )
+    )
     JOB_TASKS[job_id] = task
     return _serialize_job(job, include_result=True)
 
 
 @app.get("/api/audit/events")
-async def list_audit_events(session_id: str | None = None, mode: str | None = None, limit: int = 20):
+async def list_audit_events(request: Request, session_id: str | None = None, mode: str | None = None, limit: int = 20):
+    try:
+        access_context = resolve_access_context(request.query_params, client_session_id=session_id or "audit")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     events = await audit_store.list_events(
-        session_id=session_id or None,
+        session_id=access_context.effective_session_id if session_id else None,
         mode=(mode or None),
+        user_id=access_context.user_id,
+        workspace_id=access_context.workspace_id,
         limit=max(1, min(limit, 100)),
     )
     return {"events": [asdict(event) for event in events]}
 
 
 @app.get("/api/audit/summary")
-async def get_audit_summary(session_id: str | None = None, mode: str | None = None):
+async def get_audit_summary(request: Request, session_id: str | None = None, mode: str | None = None):
+    try:
+        access_context = resolve_access_context(request.query_params, client_session_id=session_id or "audit")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
     return await audit_store.summarize(
-        session_id=session_id or None,
+        session_id=access_context.effective_session_id if session_id else None,
         mode=(mode or None),
+        user_id=access_context.user_id,
+        workspace_id=access_context.workspace_id,
     )
 
 
 @app.get("/api/files")
-async def list_uploaded_files(session_id: str = "default", mode: str = MODE_GENERAL):
+async def list_uploaded_files(request: Request, session_id: str = "default", mode: str = MODE_GENERAL):
+    try:
+        access_context = resolve_access_context(request.query_params, client_session_id=session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
         return {"files": [_document_metadata(document) for document in session.uploaded_documents]}
@@ -3404,10 +3552,17 @@ async def upload_files(
     files: list[UploadFile] = File(...),
     session_id: str = Form("default"),
     mode: str = Form(MODE_GENERAL),
+    user_id: str | None = Form(None),
+    workspace_id: str | None = Form(None),
 ):
     if not files:
         return JSONResponse({"error": get_text('upload_error_missing_files', LANGUAGE)}, status_code=400)
 
+    try:
+        access_context = resolve_access_context({"user_id": user_id, "workspace_id": workspace_id}, client_session_id=session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
         if len(session.uploaded_documents) + len(files) > MAX_UPLOAD_FILES:
@@ -3477,7 +3632,19 @@ async def upload_files(
 
 
 @app.delete("/api/files/{file_id}")
-async def delete_uploaded_file(file_id: str, session_id: str = "default", mode: str = MODE_GENERAL):
+async def delete_uploaded_file(
+    file_id: str,
+    request: Request,
+    session_id: str = "default",
+    mode: str = MODE_GENERAL,
+    user_id: str | None = None,
+    workspace_id: str | None = None,
+):
+    try:
+        access_context = resolve_access_context(request.query_params, client_session_id=session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
         removed_document = next((document for document in session.uploaded_documents if document.file_id == file_id), None)
@@ -3495,8 +3662,13 @@ async def delete_uploaded_file(file_id: str, session_id: str = "default", mode: 
 @app.post("/api/sessions/clear")
 async def clear_session(request: Request):
     body = await request.json()
-    session_id = get_session_id(body)
+    client_session_id = get_session_id(body)
     mode = str(body.get("mode", MODE_GENERAL)).strip() or MODE_GENERAL
+    try:
+        access_context = resolve_access_context(body, client_session_id=client_session_id)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    session_id = access_context.effective_session_id
     await session_store.clear_session(mode, session_id)
     return {"status": "ok"}
 

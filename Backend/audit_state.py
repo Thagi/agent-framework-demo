@@ -18,6 +18,8 @@ class AuditEvent:
     mode: str
     session_id: str
     model_name: str
+    user_id: str = "demo"
+    workspace_id: str = "default-space"
     provider: str | None = None
     target: str | None = None
     status: str = "completed"
@@ -87,6 +89,8 @@ class AuditStore:
         *,
         session_id: str | None = None,
         mode: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
         limit: int = 20,
     ) -> list[AuditEvent]:
         async with self._guard:
@@ -96,6 +100,10 @@ class AuditStore:
             events = [event for event in events if event.session_id == session_id]
         if mode:
             events = [event for event in events if event.mode == mode]
+        if user_id:
+            events = [event for event in events if event.user_id == user_id]
+        if workspace_id:
+            events = [event for event in events if event.workspace_id == workspace_id]
 
         events.sort(key=lambda event: event.created_at, reverse=True)
         return events[:limit]
@@ -105,6 +113,8 @@ class AuditStore:
         *,
         session_id: str | None = None,
         mode: str | None = None,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
         recent_limit: int = 5,
     ) -> dict[str, Any]:
         async with self._guard:
@@ -114,6 +124,10 @@ class AuditStore:
             events = [event for event in events if event.session_id == session_id]
         if mode:
             events = [event for event in events if event.mode == mode]
+        if user_id:
+            events = [event for event in events if event.user_id == user_id]
+        if workspace_id:
+            events = [event for event in events if event.workspace_id == workspace_id]
 
         events.sort(key=lambda event: event.created_at, reverse=True)
 

@@ -46,6 +46,30 @@
                 </div>
             </nav>
 
+            <div class="rail-panel access-panel">
+                <div class="rail-panel-title" data-i18n="access_panel_title">Crew Access</div>
+                <div class="access-field">
+                    <label class="access-label" for="accessUserSelect" data-i18n="access_user_label">Operator</label>
+                    <select id="accessUserSelect" class="access-select"></select>
+                </div>
+                <div class="access-field">
+                    <label class="access-label" for="accessWorkspaceSelect" data-i18n="access_workspace_label">Workspace</label>
+                    <select id="accessWorkspaceSelect" class="access-select"></select>
+                </div>
+                <div class="access-meta-grid">
+                    <div class="access-meta-card">
+                        <div class="access-meta-label" data-i18n="access_role_label">Role</div>
+                        <div class="access-meta-value" id="accessRoleValue">-</div>
+                    </div>
+                    <div class="access-meta-card">
+                        <div class="access-meta-label" data-i18n="access_visibility_label">Visibility</div>
+                        <div class="access-meta-value" id="accessVisibilityValue">-</div>
+                    </div>
+                </div>
+                <div class="access-description" id="accessWorkspaceDescription" data-i18n="access_loading">Loading access...</div>
+                <div class="access-members" id="accessMembersValue">-</div>
+            </div>
+
             <div class="rail-panel">
                 <div class="rail-panel-title" data-i18n="telemetry_title">Telemetry</div>
                 <div class="telemetry-card">

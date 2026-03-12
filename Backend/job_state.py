@@ -18,6 +18,8 @@ class JobState:
     session_id: str
     model_name: str
     prompt: str
+    user_id: str = "demo"
+    workspace_id: str = "default-space"
     tone: str | None = None
     status: str = "queued"
     progress_stage: str = "queued"
@@ -78,6 +80,8 @@ class JobStore:
         session_id: str,
         model_name: str,
         prompt: str,
+        user_id: str,
+        workspace_id: str,
         tone: str | None = None,
     ) -> JobState:
         job = JobState(
@@ -86,6 +90,8 @@ class JobStore:
             session_id=session_id,
             model_name=model_name,
             prompt=prompt,
+            user_id=user_id,
+            workspace_id=workspace_id,
             tone=tone,
         )
         async with self._guard:
@@ -97,11 +103,22 @@ class JobStore:
         async with self._guard:
             return self._jobs.get(job_id)
 
-    async def list_jobs(self, session_id: str | None = None, limit: int = 50) -> list[JobState]:
+    async def list_jobs(
+        self,
+        session_id: str | None = None,
+        *,
+        user_id: str | None = None,
+        workspace_id: str | None = None,
+        limit: int = 50,
+    ) -> list[JobState]:
         async with self._guard:
             jobs = list(self._jobs.values())
         if session_id:
             jobs = [job for job in jobs if job.session_id == session_id]
+        if user_id:
+            jobs = [job for job in jobs if job.user_id == user_id]
+        if workspace_id:
+            jobs = [job for job in jobs if job.workspace_id == workspace_id]
         jobs.sort(key=lambda job: job.updated_at, reverse=True)
         return jobs[:limit]
 

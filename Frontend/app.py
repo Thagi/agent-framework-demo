@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import os
 from pathlib import Path
+from typing import Any
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -71,6 +72,34 @@ def _append_message(session_id: str, message: dict) -> None:
         messages_store[session_id] = _load_persisted_messages(session_id)
     messages_store[session_id].append(message)
     _persist_messages(session_id)
+
+
+def _normalize_scope_value(value: str | None, fallback: str) -> str:
+    text = str(value or '').strip()
+    return text or fallback
+
+
+def _extract_access_scope(data: Any) -> tuple[str | None, str | None]:
+    if not hasattr(data, 'get'):
+        return (None, None)
+    user_id = str(data.get('user_id') or '').strip() or None
+    workspace_id = str(data.get('workspace_id') or '').strip() or None
+    return (user_id, workspace_id)
+
+
+def _scoped_frontend_session_id(session_id: str, user_id: str | None, workspace_id: str | None) -> str:
+    normalized_session_id = _normalize_scope_value(session_id, 'default')
+    normalized_user_id = _normalize_scope_value(user_id, 'default-user')
+    normalized_workspace_id = _normalize_scope_value(workspace_id, 'default-space')
+    return f'workspace:{normalized_workspace_id}::user:{normalized_user_id}::session:{normalized_session_id}'
+
+
+def _copy_access_fields(payload: dict[str, Any], *, user_id: str | None, workspace_id: str | None) -> dict[str, Any]:
+    if user_id:
+        payload['user_id'] = user_id
+    if workspace_id:
+        payload['workspace_id'] = workspace_id
+    return payload
 
 
 def _extract_route_metadata(data: dict) -> dict:
@@ -141,13 +170,17 @@ def front_text(key: str, **kwargs) -> str:
     return template.format(**kwargs)
 
 
-def clear_backend_session(mode: str, session_id: str) -> None:
+def clear_backend_session(mode: str, session_id: str, *, user_id: str | None = None, workspace_id: str | None = None) -> None:
     """Best-effort clear for backend-side Agent Framework session memory."""
     try:
         with httpx.Client(timeout=10.0) as client:
             response = client.post(
                 f"{app.config['BACKEND_URL']}/api/sessions/clear",
-                json={"mode": mode, "session_id": session_id},
+                json=_copy_access_fields(
+                    {"mode": mode, "session_id": session_id},
+                    user_id=user_id,
+                    workspace_id=workspace_id,
+                ),
             )
             response.raise_for_status()
     except Exception as exc:
@@ -175,15 +208,29 @@ def get_models():
         return jsonify({"default_model": None, "models": [], "error": str(exc)}), 502
 
 
+@app.route('/api/access/bootstrap', methods=['GET'])
+def get_access_bootstrap():
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(f"{app.config['BACKEND_URL']}/api/access/bootstrap")
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.error("Failed to fetch access bootstrap: %s", exc)
+        return jsonify({"default_user_id": None, "users": [], "workspaces": [], "error": str(exc)}), 502
+
+
 @app.route('/api/audit/summary', methods=['GET'])
 def get_audit_summary():
     params = {}
     session_id = request.args.get('session_id')
     mode = request.args.get('mode')
+    user_id, workspace_id = _extract_access_scope(request.args)
     if session_id:
         params['session_id'] = session_id
     if mode:
         params['mode'] = mode
+    _copy_access_fields(params, user_id=user_id, workspace_id=workspace_id)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -201,12 +248,14 @@ def get_audit_events():
     session_id = request.args.get('session_id')
     mode = request.args.get('mode')
     limit = request.args.get('limit')
+    user_id, workspace_id = _extract_access_scope(request.args)
     if session_id:
         params['session_id'] = session_id
     if mode:
         params['mode'] = mode
     if limit:
         params['limit'] = limit
+    _copy_access_fields(params, user_id=user_id, workspace_id=workspace_id)
 
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -222,12 +271,13 @@ def get_audit_events():
 def get_uploaded_files():
     session_id = request.args.get('session_id', 'default')
     mode = request.args.get('mode', 'general')
+    user_id, workspace_id = _extract_access_scope(request.args)
 
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.get(
                 f"{app.config['BACKEND_URL']}/api/files",
-                params={'session_id': session_id, 'mode': mode},
+                params=_copy_access_fields({'session_id': session_id, 'mode': mode}, user_id=user_id, workspace_id=workspace_id),
             )
             response.raise_for_status()
             return jsonify(response.json())
@@ -240,6 +290,7 @@ def get_uploaded_files():
 def upload_files():
     session_id = request.form.get('session_id', 'default')
     mode = request.form.get('mode', 'general')
+    user_id, workspace_id = _extract_access_scope(request.form)
     files = request.files.getlist('files')
 
     if not files:
@@ -262,7 +313,7 @@ def upload_files():
         with httpx.Client(timeout=120.0) as client:
             response = client.post(
                 f"{app.config['BACKEND_URL']}/api/files",
-                data={'session_id': session_id, 'mode': mode},
+                data=_copy_access_fields({'session_id': session_id, 'mode': mode}, user_id=user_id, workspace_id=workspace_id),
                 files=backend_files,
             )
             return jsonify(response.json()), response.status_code
@@ -275,12 +326,13 @@ def upload_files():
 def delete_uploaded_file(file_id: str):
     session_id = request.args.get('session_id', 'default')
     mode = request.args.get('mode', 'general')
+    user_id, workspace_id = _extract_access_scope(request.args)
 
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.delete(
                 f"{app.config['BACKEND_URL']}/api/files/{file_id}",
-                params={'session_id': session_id, 'mode': mode},
+                params=_copy_access_fields({'session_id': session_id, 'mode': mode}, user_id=user_id, workspace_id=workspace_id),
             )
             return jsonify(response.json()), response.status_code
     except Exception as exc:
@@ -292,10 +344,12 @@ def delete_uploaded_file(file_id: str):
 def get_messages():
     """Get message history"""
     session_id = request.args.get('session_id', 'default')
-    messages = messages_store.get(session_id)
+    user_id, workspace_id = _extract_access_scope(request.args)
+    scoped_session_id = _scoped_frontend_session_id(session_id, user_id, workspace_id)
+    messages = messages_store.get(scoped_session_id)
     if messages is None:
-        messages = _load_persisted_messages(session_id)
-        messages_store[session_id] = messages
+        messages = _load_persisted_messages(scoped_session_id)
+        messages_store[scoped_session_id] = messages
     return jsonify(messages)
 
 
@@ -305,11 +359,13 @@ def clear_messages():
     data = request.json
     session_id = data.get('session_id', 'default')
     mode = data.get('mode', 'general')
-    messages_store[session_id] = []
-    path = _message_store_path(session_id)
+    user_id, workspace_id = _extract_access_scope(data)
+    scoped_session_id = _scoped_frontend_session_id(session_id, user_id, workspace_id)
+    messages_store[scoped_session_id] = []
+    path = _message_store_path(scoped_session_id)
     if path.exists():
         path.unlink()
-    clear_backend_session(mode, session_id)
+    clear_backend_session(mode, session_id, user_id=user_id, workspace_id=workspace_id)
     return jsonify({'status': 'ok'})
 
 
@@ -326,6 +382,8 @@ def chat_stream():
     context_mode = data.get('context_mode')
     stored_user_content = data.get('stored_user_content') or prompt
     route_metadata = _extract_route_metadata(data)
+    user_id, workspace_id = _extract_access_scope(data)
+    frontend_session_id = _scoped_frontend_session_id(session_id, user_id, workspace_id)
     
     logger.info(f"[{request_id}] {front_text('log_front_request_received', model=model)}")
     
@@ -338,7 +396,7 @@ def chat_stream():
         'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
-    _append_message(session_id, user_message)
+    _append_message(frontend_session_id, user_message)
     
     def generate():
         """Generate streaming response"""
@@ -360,6 +418,8 @@ def chat_stream():
                         'context_mode': context_mode,
                         'route_mode': route_metadata.get('route_mode'),
                         'route_confidence': route_metadata.get('route_confidence'),
+                        'user_id': user_id,
+                        'workspace_id': workspace_id,
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -405,7 +465,7 @@ def chat_stream():
                 'is_streaming': False
             }
             ai_message.update(route_metadata)
-            _append_message(session_id, ai_message)
+            _append_message(frontend_session_id, ai_message)
             
         except Exception as e:
             error_data = {'type': 'error', 'message': str(e)}
@@ -421,7 +481,7 @@ def chat_stream():
                 'is_streaming': False
             }
             ai_message.update(route_metadata)
-            _append_message(session_id, ai_message)
+            _append_message(frontend_session_id, ai_message)
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
@@ -437,6 +497,8 @@ def guideline_stream():
     context_mode = data.get('context_mode')
     stored_user_content = data.get('stored_user_content') or prompt
     route_metadata = _extract_route_metadata(data)
+    user_id, workspace_id = _extract_access_scope(data)
+    frontend_session_id = _scoped_frontend_session_id(session_id, user_id, workspace_id)
 
     logger.info(front_text('log_front_guideline_request', model=model))
     
@@ -448,7 +510,7 @@ def guideline_stream():
         'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
-    _append_message(session_id, user_message)
+    _append_message(frontend_session_id, user_message)
     
     def generate():
         """Generate streaming response"""
@@ -470,6 +532,8 @@ def guideline_stream():
                         'context_mode': context_mode,
                         'route_mode': route_metadata.get('route_mode'),
                         'route_confidence': route_metadata.get('route_confidence'),
+                        'user_id': user_id,
+                        'workspace_id': workspace_id,
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -496,7 +560,7 @@ def guideline_stream():
                             audit_payload = _extract_audit_metadata(payload)
 
             _append_message(
-                session_id,
+                frontend_session_id,
                 {
                     'is_user': False,
                     'content': ai_content,
@@ -513,7 +577,7 @@ def guideline_stream():
         except Exception as e:
             yield json.dumps({'type': 'error', 'message': str(e)}) + '\n'
             _append_message(
-                session_id,
+                frontend_session_id,
                 {
                     'is_user': False,
                     'content': ai_content + front_text('error_block', error=str(e)),
@@ -543,6 +607,8 @@ def multi_agent_stream():
     context_mode = data.get('context_mode')
     stored_user_content = data.get('stored_user_content') or f"{front_text('label_multi_agent')} {prompt}"
     route_metadata = _extract_route_metadata(data)
+    user_id, workspace_id = _extract_access_scope(data)
+    frontend_session_id = _scoped_frontend_session_id(session_id, user_id, workspace_id)
     
     logger.info(f"[{request_id}] {front_text('log_front_multi_request_received', model=model)}")
     
@@ -555,7 +621,7 @@ def multi_agent_stream():
         'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
-    _append_message(session_id, user_message)
+    _append_message(frontend_session_id, user_message)
     
     def generate():
         """Generate multi-agent streaming response"""
@@ -587,6 +653,8 @@ def multi_agent_stream():
                         'context_mode': context_mode,
                         'route_mode': route_metadata.get('route_mode'),
                         'route_confidence': route_metadata.get('route_confidence'),
+                        'user_id': user_id,
+                        'workspace_id': workspace_id,
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -630,7 +698,7 @@ def multi_agent_stream():
             
             # Save AI message
             ai_message.update(route_metadata)
-            _append_message(session_id, ai_message)
+            _append_message(frontend_session_id, ai_message)
             
         except Exception as e:
             error_data = {'type': 'error', 'message': str(e)}
@@ -638,7 +706,7 @@ def multi_agent_stream():
             
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
             ai_message.update(route_metadata)
-            _append_message(session_id, ai_message)
+            _append_message(frontend_session_id, ai_message)
     
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
@@ -657,6 +725,8 @@ def idobata_stream():
     context_mode = data.get('context_mode')
     stored_user_content = data.get('stored_user_content') or f"{front_text('label_idobata')} {prompt}"
     route_metadata = _extract_route_metadata(data)
+    user_id, workspace_id = _extract_access_scope(data)
+    frontend_session_id = _scoped_frontend_session_id(session_id, user_id, workspace_id)
 
     logger.info(
         f"[{request_id}] {front_text('log_front_board_request_received', model=model, tone=tone)}"
@@ -670,7 +740,7 @@ def idobata_stream():
         'content': stored_user_content,
         'timestamp': datetime.now().isoformat()
     }
-    _append_message(session_id, user_message)
+    _append_message(frontend_session_id, user_message)
 
     def generate():
         ai_message = {
@@ -705,6 +775,8 @@ def idobata_stream():
                         'context_mode': context_mode,
                         'route_mode': route_metadata.get('route_mode'),
                         'route_confidence': route_metadata.get('route_confidence'),
+                        'user_id': user_id,
+                        'workspace_id': workspace_id,
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -748,7 +820,7 @@ def idobata_stream():
             )
 
             ai_message.update(route_metadata)
-            _append_message(session_id, ai_message)
+            _append_message(frontend_session_id, ai_message)
 
         except Exception as e:
             error_data = {'type': 'error', 'message': str(e)}
@@ -756,7 +828,7 @@ def idobata_stream():
 
             ai_message['synthesis_content'] = front_text('error_inline', error=str(e))
             ai_message.update(route_metadata)
-            _append_message(session_id, ai_message)
+            _append_message(frontend_session_id, ai_message)
 
     return Response(stream_with_context(generate()), content_type='application/x-ndjson')
 
@@ -768,6 +840,7 @@ def chat_route():
     session_id = data.get('session_id', 'default')
     model = data.get('model', 'gpt-4.1-mini')
     context_mode = data.get('context_mode', 'general')
+    user_id, workspace_id = _extract_access_scope(data)
 
     if not prompt:
         return jsonify({'error': 'prompt required'}), 400
@@ -781,6 +854,8 @@ def chat_route():
                     'model': model,
                     'session_id': session_id,
                     'context_mode': context_mode,
+                    'user_id': user_id,
+                    'workspace_id': workspace_id,
                 },
             )
             response.raise_for_status()
@@ -798,11 +873,14 @@ def chat_route():
 @app.route('/api/jobs', methods=['GET'])
 def list_jobs():
     limit = request.args.get('limit', '30')
+    params = {'limit': limit}
+    user_id, workspace_id = _extract_access_scope(request.args)
+    _copy_access_fields(params, user_id=user_id, workspace_id=workspace_id)
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.get(
                 f"{app.config['BACKEND_URL']}/api/jobs",
-                params={'limit': limit},
+                params=params,
             )
             response.raise_for_status()
             return jsonify(response.json())
@@ -813,9 +891,12 @@ def list_jobs():
 
 @app.route('/api/jobs/<job_id>', methods=['GET'])
 def get_job(job_id: str):
+    params = {}
+    user_id, workspace_id = _extract_access_scope(request.args)
+    _copy_access_fields(params, user_id=user_id, workspace_id=workspace_id)
     try:
         with httpx.Client(timeout=20.0) as client:
-            response = client.get(f"{app.config['BACKEND_URL']}/api/jobs/{job_id}")
+            response = client.get(f"{app.config['BACKEND_URL']}/api/jobs/{job_id}", params=params)
             return jsonify(response.json()), response.status_code
     except Exception as exc:
         logger.error("Failed to get job: %s", exc)
@@ -825,11 +906,12 @@ def get_job(job_id: str):
 @app.route('/api/jobs', methods=['POST'])
 def create_job():
     data = request.json
+    user_id, workspace_id = _extract_access_scope(data)
     try:
         with httpx.Client(timeout=20.0) as client:
             response = client.post(
                 f"{app.config['BACKEND_URL']}/api/jobs",
-                json=data,
+                json=_copy_access_fields(dict(data), user_id=user_id, workspace_id=workspace_id),
             )
             return jsonify(response.json()), response.status_code
     except Exception as exc:

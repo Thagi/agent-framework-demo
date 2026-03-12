@@ -14,11 +14,20 @@ let missionJobs = [];
 let selectedJobId = null;
 let auditSummary = null;
 let auditEvents = [];
-const sessionId = 'default';
-const sessionIdGuideline = 'guideline';
-const sessionIdIdobata = 'idobata';
+let accessBootstrap = { default_user_id: null, users: [], workspaces: [] };
+let currentUserId = null;
+let currentWorkspaceId = null;
+const RAW_SESSION_IDS = Object.freeze({
+    general: 'default',
+    guideline: 'guideline',
+    idobata: 'idobata'
+});
+const sessionId = RAW_SESSION_IDS.general;
+const sessionIdGuideline = RAW_SESSION_IDS.guideline;
+const sessionIdIdobata = RAW_SESSION_IDS.idobata;
 const JOB_POLL_INTERVAL_MS = 5000;
 const AUDIT_POLL_INTERVAL_MS = 10000;
+const ACCESS_STORAGE_KEY = 'aegis-access-context';
 
 // DOM elements - general chat
 const chatMessages = document.getElementById('chatMessages');
@@ -91,12 +100,20 @@ const auditTotalTokensValue = document.getElementById('auditTotalTokensValue');
 const auditTotalCostValue = document.getElementById('auditTotalCostValue');
 const auditEventList = document.getElementById('auditEventList');
 const auditEventEmpty = document.getElementById('auditEventEmpty');
+const accessUserSelect = document.getElementById('accessUserSelect');
+const accessWorkspaceSelect = document.getElementById('accessWorkspaceSelect');
+const accessRoleValue = document.getElementById('accessRoleValue');
+const accessVisibilityValue = document.getElementById('accessVisibilityValue');
+const accessWorkspaceDescription = document.getElementById('accessWorkspaceDescription');
+const accessMembersValue = document.getElementById('accessMembersValue');
 let approvalResolver = null;
 
 const attachmentContexts = {
     general: {
         mode: 'general',
-        sessionId,
+        get sessionId() {
+            return getRawSessionId(this.mode);
+        },
         input: fileInput,
         button: attachButton,
         list: attachmentList,
@@ -109,7 +126,9 @@ const attachmentContexts = {
     },
     guideline: {
         mode: 'guideline',
-        sessionId: sessionIdGuideline,
+        get sessionId() {
+            return getRawSessionId(this.mode);
+        },
         input: fileInputGuideline,
         button: attachButtonGuideline,
         list: attachmentListGuideline,
@@ -122,7 +141,9 @@ const attachmentContexts = {
     },
     idobata: {
         mode: 'idobata',
-        sessionId: sessionIdIdobata,
+        get sessionId() {
+            return getRawSessionId(this.mode);
+        },
         input: fileInputIdobata,
         button: attachButtonIdobata,
         list: attachmentListIdobata,
@@ -154,6 +175,209 @@ function tf(key, values = {}) {
         template = template.replaceAll(`{${name}}`, String(value));
     });
     return template;
+}
+
+function getRawSessionId(mode) {
+    return RAW_SESSION_IDS[mode] || RAW_SESSION_IDS.general;
+}
+
+function getAccessPayload() {
+    return {
+        user_id: currentUserId,
+        workspace_id: currentWorkspaceId
+    };
+}
+
+function buildScopedSessionId(rawSessionId) {
+    const userPart = currentUserId || 'default-user';
+    const workspacePart = currentWorkspaceId || 'default-space';
+    return `workspace:${workspacePart}::user:${userPart}::session:${rawSessionId || 'default'}`;
+}
+
+function buildAccessQuery(params = {}) {
+    const search = new URLSearchParams();
+    Object.entries({ ...params, ...getAccessPayload() }).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') {
+            search.set(key, String(value));
+        }
+    });
+    return search.toString();
+}
+
+function getAccessStorageSnapshot() {
+    return {
+        user_id: currentUserId,
+        workspace_id: currentWorkspaceId
+    };
+}
+
+function persistAccessSelection() {
+    try {
+        window.localStorage.setItem(ACCESS_STORAGE_KEY, JSON.stringify(getAccessStorageSnapshot()));
+    } catch (error) {
+        console.warn('Access selection persist failed:', error);
+    }
+}
+
+function readStoredAccessSelection() {
+    try {
+        const raw = window.localStorage.getItem(ACCESS_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+        console.warn('Access selection restore failed:', error);
+        return {};
+    }
+}
+
+function getUserDefinition(userId) {
+    return (accessBootstrap.users || []).find(user => user.id === userId) || null;
+}
+
+function getWorkspaceDefinition(workspaceId) {
+    return (accessBootstrap.workspaces || []).find(workspace => workspace.id === workspaceId) || null;
+}
+
+function getWorkspacesForUser(userId) {
+    return (accessBootstrap.workspaces || []).filter(workspace => Array.isArray(workspace.member_ids) && workspace.member_ids.includes(userId));
+}
+
+function normalizeAccessSelection(userId, workspaceId) {
+    const users = Array.isArray(accessBootstrap.users) ? accessBootstrap.users : [];
+    const fallbackUserId = accessBootstrap.default_user_id || (users[0] && users[0].id) || null;
+    const resolvedUserId = users.some(user => user.id === userId) ? userId : fallbackUserId;
+    const userDefinition = getUserDefinition(resolvedUserId);
+    const availableWorkspaces = getWorkspacesForUser(resolvedUserId);
+    const defaultWorkspaceId = userDefinition && userDefinition.default_workspace_id;
+    const fallbackWorkspaceId = (defaultWorkspaceId && availableWorkspaces.some(item => item.id === defaultWorkspaceId))
+        ? defaultWorkspaceId
+        : (availableWorkspaces[0] && availableWorkspaces[0].id) || null;
+    const resolvedWorkspaceId = availableWorkspaces.some(workspace => workspace.id === workspaceId)
+        ? workspaceId
+        : fallbackWorkspaceId;
+    return {
+        userId: resolvedUserId,
+        workspaceId: resolvedWorkspaceId
+    };
+}
+
+function renderAccessControls() {
+    if (!accessUserSelect || !accessWorkspaceSelect) {
+        return;
+    }
+
+    accessUserSelect.innerHTML = '';
+    (accessBootstrap.users || []).forEach(user => {
+        const option = document.createElement('option');
+        option.value = user.id;
+        option.textContent = user.role ? `${user.name} / ${user.role}` : user.name;
+        if (user.id === currentUserId) {
+            option.selected = true;
+        }
+        accessUserSelect.appendChild(option);
+    });
+
+    accessWorkspaceSelect.innerHTML = '';
+    getWorkspacesForUser(currentUserId).forEach(workspace => {
+        const option = document.createElement('option');
+        option.value = workspace.id;
+        option.textContent = workspace.name;
+        if (workspace.id === currentWorkspaceId) {
+            option.selected = true;
+        }
+        accessWorkspaceSelect.appendChild(option);
+    });
+
+    const user = getUserDefinition(currentUserId);
+    const workspace = getWorkspaceDefinition(currentWorkspaceId);
+    if (accessRoleValue) {
+        accessRoleValue.textContent = user && user.role ? user.role : '-';
+    }
+    if (accessVisibilityValue) {
+        accessVisibilityValue.textContent = workspace ? t(`access_visibility_${workspace.visibility}`) : '-';
+    }
+    if (accessWorkspaceDescription) {
+        accessWorkspaceDescription.textContent = workspace && workspace.description ? workspace.description : t('access_loading');
+    }
+    if (accessMembersValue) {
+        const memberNames = workspace
+            ? (workspace.member_ids || [])
+                .map(memberId => getUserDefinition(memberId))
+                .filter(Boolean)
+                .map(member => member.name)
+            : [];
+        accessMembersValue.textContent = memberNames.length
+            ? `${t('access_members_prefix')}: ${memberNames.join(', ')}`
+            : '-';
+    }
+}
+
+function resetConversationPane(container, welcomeElement, showWelcomeFn) {
+    Array.from(container.children).forEach(child => {
+        if (welcomeElement && child !== welcomeElement) {
+            child.remove();
+        }
+    });
+    showWelcomeFn();
+}
+
+function resetScopedUiState() {
+    messages = [];
+    messagesGuideline = [];
+    messagesIdobata = [];
+    attachments = [];
+    attachmentsGuideline = [];
+    attachmentsIdobata = [];
+    missionJobs = [];
+    selectedJobId = null;
+    auditSummary = null;
+    auditEvents = [];
+
+    resetConversationPane(chatMessages, welcomeScreen, showWelcomeScreen);
+    resetConversationPane(chatMessagesGuideline, welcomeScreenGuideline, showWelcomeScreenGuideline);
+    resetConversationPane(chatMessagesIdobata, welcomeScreenIdobata, showWelcomeScreenIdobata);
+    Object.values(attachmentContexts).forEach(renderAttachmentList);
+    renderMissionList();
+    renderMissionDetail(null);
+    renderAuditSummary();
+    renderAuditEventFeed();
+}
+
+async function refreshScopedData() {
+    resetScopedUiState();
+    await initializeHistories();
+    await initializeAttachments();
+    await refreshJobs(false);
+    await refreshAuditDashboard();
+}
+
+async function applyAccessSelection(userId, workspaceId, { reload = true } = {}) {
+    const normalized = normalizeAccessSelection(userId, workspaceId);
+    currentUserId = normalized.userId;
+    currentWorkspaceId = normalized.workspaceId;
+    persistAccessSelection();
+    renderAccessControls();
+    if (reload) {
+        await refreshScopedData();
+    }
+}
+
+async function loadAccessBootstrap() {
+    const response = await fetch('/api/access/bootstrap');
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+
+    accessBootstrap = {
+        default_user_id: payload.default_user_id || null,
+        users: Array.isArray(payload.users) ? payload.users : [],
+        workspaces: Array.isArray(payload.workspaces) ? payload.workspaces : [],
+    };
+
+    const stored = readStoredAccessSelection();
+    await applyAccessSelection(stored.user_id, stored.workspace_id, { reload: false });
 }
 
 function findModelDefinition(modelId) {
@@ -244,7 +468,8 @@ async function loadAttachments(mode) {
     if (!context) return;
 
     try {
-        const response = await fetch(`/api/files?session_id=${encodeURIComponent(context.sessionId)}&mode=${encodeURIComponent(mode)}`);
+        const query = buildAccessQuery({ session_id: context.sessionId, mode });
+        const response = await fetch(`/api/files?${query}`);
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.error || `HTTP ${response.status}`);
@@ -267,6 +492,13 @@ async function uploadSelectedFiles(mode) {
     const formData = new FormData();
     formData.append('session_id', context.sessionId);
     formData.append('mode', mode);
+    const accessPayload = getAccessPayload();
+    if (accessPayload.user_id) {
+        formData.append('user_id', accessPayload.user_id);
+    }
+    if (accessPayload.workspace_id) {
+        formData.append('workspace_id', accessPayload.workspace_id);
+    }
     Array.from(context.input.files).forEach(file => {
         formData.append('files', file);
     });
@@ -295,8 +527,9 @@ async function removeAttachment(mode, fileId) {
     if (!context || !fileId) return;
 
     try {
+        const query = buildAccessQuery({ session_id: context.sessionId, mode });
         const response = await fetch(
-            `/api/files/${encodeURIComponent(fileId)}?session_id=${encodeURIComponent(context.sessionId)}&mode=${encodeURIComponent(mode)}`,
+            `/api/files/${encodeURIComponent(fileId)}?${query}`,
             { method: 'DELETE' }
         );
         const payload = await response.json();
@@ -399,6 +632,7 @@ async function loadAvailableModels() {
 
 window.renderDynamicUi = () => {
     renderModelSelects();
+    renderAccessControls();
     Object.values(attachmentContexts).forEach(renderAttachmentList);
     renderMissionList();
     const activeJob = selectedJobId ? missionJobs.find(job => job.job_id === selectedJobId) || null : null;
@@ -542,6 +776,16 @@ if (refreshJobsButton) {
     refreshJobsButton.addEventListener('click', () => {
         refreshJobs(false);
         refreshAuditDashboard();
+    });
+}
+if (accessUserSelect) {
+    accessUserSelect.addEventListener('change', async event => {
+        await applyAccessSelection(event.target.value, null);
+    });
+}
+if (accessWorkspaceSelect) {
+    accessWorkspaceSelect.addEventListener('change', async event => {
+        await applyAccessSelection(currentUserId, event.target.value);
     });
 }
 
@@ -847,7 +1091,8 @@ function normalizeStoredMessage(message) {
 
 async function loadHistory(sessionKey, targetMessages, renderFn, showWelcomeFn, hideWelcomeFn) {
     try {
-        const response = await fetch(`/api/messages?session_id=${encodeURIComponent(sessionKey)}`);
+        const query = buildAccessQuery({ session_id: sessionKey });
+        const response = await fetch(`/api/messages?${query}`);
         if (!response.ok) {
             showWelcomeFn();
             return;
@@ -885,6 +1130,7 @@ async function initializeAttachments() {
 }
 
 async function initializeApp() {
+    await loadAccessBootstrap();
     await loadAvailableModels();
     await initializeHistories();
     await initializeAttachments();
@@ -1159,7 +1405,7 @@ function renderMissionDetail(job) {
 }
 
 async function loadJobDetail(jobId) {
-    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}?${buildAccessQuery()}`);
     const payload = await response.json();
     if (!response.ok) {
         throw new Error(payload.error || `HTTP ${response.status}`);
@@ -1177,7 +1423,7 @@ async function loadJobDetail(jobId) {
 
 async function refreshJobs(preserveSelection = true) {
     try {
-        const response = await fetch('/api/jobs?limit=30');
+        const response = await fetch(`/api/jobs?${buildAccessQuery({ limit: 30 })}`);
         const payload = await response.json();
         if (!response.ok) {
             throw new Error(payload.error || `HTTP ${response.status}`);
@@ -1269,8 +1515,8 @@ function renderAuditEventFeed() {
 async function refreshAuditDashboard() {
     try {
         const [summaryResponse, eventsResponse] = await Promise.all([
-            fetch('/api/audit/summary'),
-            fetch('/api/audit/events?limit=6'),
+            fetch(`/api/audit/summary?${buildAccessQuery()}`),
+            fetch(`/api/audit/events?${buildAccessQuery({ limit: 6 })}`),
         ]);
 
         const summaryPayload = await summaryResponse.json();
@@ -1352,6 +1598,7 @@ async function startQueuedJob(mode) {
                 mode,
                 model,
                 tone,
+                ...getAccessPayload(),
             })
         });
         const payload = await response.json();
@@ -2740,9 +2987,10 @@ async function requestAutoRoute(prompt, modelId) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             prompt,
-            session_id: sessionId,
+            session_id: getRawSessionId('general'),
             model: modelId,
-            context_mode: 'general'
+            context_mode: 'general',
+            ...getAccessPayload(),
         })
     });
 
@@ -2914,6 +3162,7 @@ async function streamNormalChat(prompt, aiMessage, options = {}) {
         prompt,
         session_id: sessionKey,
         model: selectedModel,
+        ...getAccessPayload(),
         ...options.requestExtras,
     };
 
@@ -2990,6 +3239,7 @@ async function streamMultiAgentChat(prompt, aiMessage, options = {}) {
         prompt,
         session_id: sessionKey,
         model: selectedModel,
+        ...getAccessPayload(),
         ...options.requestExtras,
     };
 
@@ -3089,6 +3339,7 @@ async function streamIdobataChat(prompt, aiMessage, options = {}) {
         session_id: sessionKey,
         model: selectedModel,
         tone: selectedTone,
+        ...getAccessPayload(),
         ...options.requestExtras,
     };
 
@@ -3152,7 +3403,7 @@ function clearChat() {
     fetch('/api/messages/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId, mode: 'general' })
+        body: JSON.stringify({ session_id: sessionId, mode: 'general', ...getAccessPayload() })
     });
     
     messages = [];
@@ -3173,7 +3424,7 @@ function clearIdobataChat() {
     fetch('/api/messages/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionIdIdobata, mode: 'idobata' })
+        body: JSON.stringify({ session_id: sessionIdIdobata, mode: 'idobata', ...getAccessPayload() })
     });
 
     messagesIdobata = [];
@@ -3193,7 +3444,7 @@ function clearGuidelineChat() {
     fetch('/api/messages/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionIdGuideline, mode: 'guideline' })
+        body: JSON.stringify({ session_id: sessionIdGuideline, mode: 'guideline', ...getAccessPayload() })
     });
 
     messagesGuideline = [];
@@ -3515,4 +3766,6 @@ async function streamGuidelineChat(prompt, aiMessage, options = {}) {
     }
 }
 
-void initializeApp();
+void initializeApp().catch(error => {
+    console.error('App initialization error:', error);
+});

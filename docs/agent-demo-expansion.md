@@ -26,7 +26,7 @@ The current demo already covers:
 
 ## Delivery Status
 
-Work is being implemented in priority order. As of March 11, 2026, the status is:
+Work is being implemented in priority order. As of March 12, 2026, the status is:
 
 | Item | Status | Notes |
 |---|---|---|
@@ -39,6 +39,7 @@ Work is being implemented in priority order. As of March 11, 2026, the status is
 | Critic / evaluator agent | Implemented | After each answer, an evaluator agent returns score / strengths / risks / missing info / next step |
 | Async job execution | Implemented | Prompts can be queued as Mission Queue jobs and tracked from persisted JSON-backed job state in the right rail |
 | Audit log / cost dashboard | Implemented | Ops Ledger aggregates runs, tokens, and estimated cost, and each answer can expose its audit log inline |
+| Multi-user / access control | Implemented (demo-oriented) | Crew Access can switch demo users/workspaces, and shared/private workspaces isolate history, attachments, jobs, and audit logs |
 
 That means the next step is not "can it answer?", but "can it plan, act, explain, and be governed?"
 
@@ -187,12 +188,19 @@ Track:
 
 #### 10. Multi-user workspace and access control
 
-Add:
+The first demo-oriented slice is now implemented:
 
-- login
-- team-shared history
-- access control
-- shared knowledge bases
+- demo user switching
+- shared/private workspace switching
+- workspace-scoped history, attachments, async jobs, and audit logs
+- backend membership validation
+
+Production follow-ups:
+
+- SSO / real user login
+- RBAC / team permissions
+- workspace-specific RAG indexes or knowledge bases
+- move persistence to Redis / PostgreSQL / object storage
 
 ## Best Demo Scenarios
 

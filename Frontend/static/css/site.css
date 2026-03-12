@@ -2470,6 +2470,70 @@ body::after {
     color: var(--accent);
 }
 
+.access-panel {
+    gap: 0.9rem;
+}
+
+.access-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.access-label,
+.access-meta-label {
+    font-size: 0.72rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: rgba(201, 228, 255, 0.6);
+}
+
+.access-select {
+    width: 100%;
+    border-radius: 14px;
+    border: 1px solid rgba(125, 189, 255, 0.2);
+    background: rgba(5, 16, 35, 0.88);
+    color: #e7f5ff;
+    padding: 0.78rem 0.95rem;
+    font: inherit;
+    box-shadow: inset 0 0 0 1px rgba(24, 52, 96, 0.3);
+}
+
+.access-select:focus {
+    outline: none;
+    border-color: rgba(108, 210, 255, 0.6);
+    box-shadow: 0 0 0 3px rgba(66, 171, 255, 0.16);
+}
+
+.access-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.access-meta-card {
+    border-radius: 16px;
+    border: 1px solid rgba(96, 166, 255, 0.15);
+    background: rgba(7, 20, 40, 0.74);
+    padding: 0.75rem 0.85rem;
+}
+
+.access-meta-value,
+.access-description,
+.access-members {
+    color: #d8ecff;
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+.access-description {
+    min-height: 2.9rem;
+}
+
+.access-members {
+    color: rgba(188, 219, 245, 0.8);
+}
+
 @media (max-width: 1280px) {
     .app-shell {
         grid-template-columns: 260px minmax(0, 1fr) 320px;
@@ -2536,7 +2600,12 @@ body::after {
 
     .mission-card,
     .mission-section,
-    .mission-meta-row {
+    .mission-meta-row,
+    .access-meta-card {
         padding: 0.8rem;
+    }
+
+    .access-meta-grid {
+        grid-template-columns: 1fr;
     }
 }

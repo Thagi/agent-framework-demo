@@ -26,6 +26,7 @@ It is a 2-tier setup: Browser → Frontend (Flask) → Backend (FastAPI). It use
 - **Quality review**: After each answer, an evaluator agent returns `score / strengths / risks / missing info / next step` so response quality is visible
 - **Mission Queue**: Each mode can submit prompts as async jobs and track progress/results from the right-side Mission Queue
 - **Ops Ledger**: The left rail aggregates run count, token usage, and estimated cost, while each answer can show its audit log inline
+- **Crew Access**: The frontend can switch backend-defined demo users/workspaces, and shared/private workspaces isolate history, attachments, jobs, and audit logs
 
 ### Multi-agent analysis (ConcurrentBuilder)
 <img src="./img/004.gif" width="80%" />
@@ -167,6 +168,7 @@ Notes:
 - `PLAN_TIMEOUT_SECONDS` controls how long the pre-answer planner is allowed to run. On timeout, the backend falls back to a default plan and continues with the main answer.
 - `ROUTE_TIMEOUT_SECONDS` controls how long the Auto Route router is allowed to run. On timeout, the backend falls back to heuristic routing.
 - `ENABLE_EVALUATION_AGENT` and `EVALUATION_TIMEOUT_SECONDS` control whether post-answer quality review runs and how long it may take.
+- `DEMO_USERS_JSON` / `DEMO_WORKSPACES_JSON` / `DEFAULT_DEMO_USER` / `DEFAULT_DEMO_WORKSPACE` let you replace the `Crew Access` roster and shared/private workspace topology from the backend only.
 - `BACKEND_JOB_STORE_PATH` lets you change where async job JSON state is persisted.
 - `BACKEND_AUDIT_STORE_PATH` lets you change where audit log JSON state is persisted.
 - Set `INPUT_COST_PER_1K_TOKENS` / `OUTPUT_COST_PER_1K_TOKENS` / `CURRENCY` per model to enable estimated cost aggregation in Ops Ledger.
