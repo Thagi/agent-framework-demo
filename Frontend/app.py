@@ -723,6 +723,48 @@ def chat_route():
         })
 
 
+@app.route('/api/jobs', methods=['GET'])
+def list_jobs():
+    limit = request.args.get('limit', '30')
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.get(
+                f"{app.config['BACKEND_URL']}/api/jobs",
+                params={'limit': limit},
+            )
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.error("Failed to list jobs: %s", exc)
+        return jsonify({"jobs": [], "error": str(exc)}), 502
+
+
+@app.route('/api/jobs/<job_id>', methods=['GET'])
+def get_job(job_id: str):
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.get(f"{app.config['BACKEND_URL']}/api/jobs/{job_id}")
+            return jsonify(response.json()), response.status_code
+    except Exception as exc:
+        logger.error("Failed to get job: %s", exc)
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.route('/api/jobs', methods=['POST'])
+def create_job():
+    data = request.json
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            response = client.post(
+                f"{app.config['BACKEND_URL']}/api/jobs",
+                json=data,
+            )
+            return jsonify(response.json()), response.status_code
+    except Exception as exc:
+        logger.error("Failed to create job: %s", exc)
+        return jsonify({"error": str(exc)}), 502
+
+
 if __name__ == '__main__':
     port = int(os.getenv("PORT", "5001"))
     debug = os.getenv("FLASK_DEBUG", "0").lower() in ("1", "true", "yes", "on")

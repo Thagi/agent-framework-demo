@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600;700&family=Orbitron:wght@500;700&family=Space+Grotesk:wght@400;500;700&display=swap');
+
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     margin: 0;
@@ -259,6 +261,48 @@ body.guideline-mode .chat-header {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+body.guideline-mode {
+    background:
+        radial-gradient(circle at 18% 18%, rgba(56, 189, 248, 0.18), transparent 32%),
+        radial-gradient(circle at 82% 12%, rgba(45, 212, 191, 0.12), transparent 28%),
+        linear-gradient(135deg, #05111e 0%, #0a1d33 45%, #071624 100%);
+}
+
+body.idobata-mode {
+    background:
+        radial-gradient(circle at 18% 18%, rgba(251, 191, 36, 0.16), transparent 28%),
+        radial-gradient(circle at 82% 12%, rgba(249, 115, 22, 0.12), transparent 24%),
+        linear-gradient(135deg, #121018 0%, #1c1820 42%, #121822 100%);
+}
+
+body.guideline-mode .chat-header {
+    background:
+        linear-gradient(135deg, rgba(56, 189, 248, 0.14), rgba(15, 23, 42, 0)),
+        rgba(255, 255, 255, 0.02);
+}
+
+body.guideline-mode .mode-tab.active {
+    background:
+        linear-gradient(135deg, rgba(56, 189, 248, 0.22), rgba(13, 148, 136, 0.08)),
+        rgba(255, 255, 255, 0.03);
+    border-color: rgba(56, 189, 248, 0.38);
+    box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.08), 0 0 24px rgba(56, 189, 248, 0.14);
+}
+
+body.idobata-mode .chat-header {
+    background:
+        linear-gradient(135deg, rgba(251, 191, 36, 0.14), rgba(15, 23, 42, 0)),
+        rgba(255, 255, 255, 0.02);
+}
+
+body.idobata-mode .mode-tab.active {
+    background:
+        linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(249, 115, 22, 0.08)),
+        rgba(255, 255, 255, 0.03);
+    border-color: rgba(251, 191, 36, 0.34);
+    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.08), 0 0 24px rgba(251, 191, 36, 0.14);
 }
 
 /* Header */
@@ -1695,4 +1739,737 @@ body.guideline-mode .chat-header {
 
 .synthesis-content a:hover {
     text-decoration: underline;
+}
+
+/* SF Command Deck Theme */
+:root {
+    --bg-0: #071018;
+    --bg-1: #0b1824;
+    --bg-2: #102335;
+    --panel: rgba(10, 21, 33, 0.78);
+    --panel-strong: rgba(9, 18, 28, 0.92);
+    --line: rgba(94, 234, 212, 0.22);
+    --line-strong: rgba(94, 234, 212, 0.45);
+    --text: #dbeafe;
+    --muted: #8aa2b7;
+    --accent: #5eead4;
+    --accent-strong: #2dd4bf;
+    --accent-warm: #f59e0b;
+    --danger: #fb7185;
+    --success: #34d399;
+    --shadow: 0 24px 60px rgba(3, 7, 18, 0.42);
+}
+
+body {
+    font-family: "Space Grotesk", "IBM Plex Sans JP", "Hiragino Sans", sans-serif;
+    display: block;
+    min-height: 100vh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    background:
+        radial-gradient(circle at 18% 18%, rgba(45, 212, 191, 0.18), transparent 32%),
+        radial-gradient(circle at 82% 12%, rgba(245, 158, 11, 0.14), transparent 28%),
+        linear-gradient(135deg, var(--bg-0) 0%, var(--bg-1) 45%, #081420 100%);
+    color: var(--text);
+    overflow: hidden;
+}
+
+body::before,
+body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+}
+
+body::before {
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 72px 72px;
+    mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.75), transparent 85%);
+    opacity: 0.38;
+}
+
+body::after {
+    background: linear-gradient(180deg, transparent 0%, rgba(94, 234, 212, 0.05) 45%, transparent 100%);
+    animation: scanSweep 10s linear infinite;
+}
+
+@keyframes scanSweep {
+    0% { transform: translateY(-18%); opacity: 0.15; }
+    50% { opacity: 0.28; }
+    100% { transform: translateY(18%); opacity: 0.12; }
+}
+
+.app-shell {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: 300px minmax(0, 1fr) 360px;
+    gap: 1.25rem;
+    height: 100vh;
+    height: 100svh;
+    height: 100dvh;
+    padding: 1.15rem;
+    box-sizing: border-box;
+}
+
+.command-rail,
+.mission-rail,
+.chat-container,
+.top-nav,
+.mode-selector {
+    background: var(--panel);
+    backdrop-filter: blur(18px);
+    border: 1px solid var(--line);
+    box-shadow: var(--shadow);
+}
+
+.command-rail,
+.mission-rail {
+    border-radius: 28px;
+    padding: 1.1rem;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+.rail-brand {
+    position: relative;
+    display: flex;
+    gap: 1rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-radius: 22px;
+    background:
+        linear-gradient(135deg, rgba(45, 212, 191, 0.12), rgba(13, 148, 136, 0.02)),
+        rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(94, 234, 212, 0.18);
+}
+
+.rail-brand::after {
+    content: "";
+    position: absolute;
+    inset: 10px;
+    border-radius: 18px;
+    border: 1px solid rgba(94, 234, 212, 0.08);
+    pointer-events: none;
+}
+
+.rail-brand-mark {
+    width: 54px;
+    height: 54px;
+    border-radius: 18px;
+    display: grid;
+    place-items: center;
+    font-size: 1.25rem;
+    color: var(--accent);
+    background: radial-gradient(circle, rgba(94, 234, 212, 0.22), rgba(45, 212, 191, 0.04));
+    box-shadow: inset 0 0 18px rgba(94, 234, 212, 0.2);
+}
+
+.rail-brand-kicker,
+.mission-kicker,
+.telemetry-label,
+.mission-meta-label,
+.mission-section-title {
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.rail-brand-kicker {
+    font-size: 0.68rem;
+    color: var(--accent);
+}
+
+.rail-brand-title {
+    margin-top: 0.2rem;
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+    font-size: 1.45rem;
+    color: #effffb;
+}
+
+.rail-brand-subtitle {
+    margin: 0.45rem 0 0;
+    color: var(--muted);
+    line-height: 1.6;
+    font-size: 0.88rem;
+}
+
+.top-nav,
+.mode-selector {
+    width: 100%;
+    max-width: none;
+    border-radius: 22px;
+    padding: 0.85rem;
+    margin: 0 0 1rem;
+    box-sizing: border-box;
+}
+
+.top-nav {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.8rem;
+    background: rgba(8, 17, 26, 0.72);
+}
+
+.top-nav-link,
+.lang-button,
+.mission-refresh-button {
+    border: 1px solid rgba(94, 234, 212, 0.18);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text);
+    border-radius: 14px;
+}
+
+.top-nav-link:hover,
+.lang-button:hover,
+.mission-refresh-button:hover {
+    background: rgba(94, 234, 212, 0.12);
+    border-color: rgba(94, 234, 212, 0.42);
+    color: #f8fffe;
+}
+
+.language-switcher {
+    width: 100%;
+}
+
+.language-switcher .lang-button {
+    flex: 1;
+}
+
+.lang-button[data-lang].active {
+    background: linear-gradient(135deg, rgba(45, 212, 191, 0.32), rgba(13, 148, 136, 0.2));
+    border-color: rgba(94, 234, 212, 0.42);
+}
+
+.mode-selector {
+    flex: 1;
+    min-height: 0;
+    background: rgba(8, 17, 26, 0.72);
+}
+
+.mode-tabs {
+    height: 100%;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0;
+}
+
+.mode-tab {
+    justify-content: flex-start;
+    padding: 1rem 1.05rem;
+    border: 1px solid rgba(94, 234, 212, 0.08);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--muted);
+    transform: none;
+}
+
+.mode-tab:hover:not(.active) {
+    background: rgba(94, 234, 212, 0.08);
+    color: var(--text);
+    transform: translateX(4px);
+}
+
+.mode-tab.active {
+    background:
+        linear-gradient(135deg, rgba(45, 212, 191, 0.22), rgba(13, 148, 136, 0.1)),
+        rgba(255, 255, 255, 0.03);
+    border-color: rgba(94, 234, 212, 0.4);
+    box-shadow: inset 0 0 0 1px rgba(94, 234, 212, 0.08), 0 0 24px rgba(45, 212, 191, 0.14);
+}
+
+.mode-icon {
+    font-size: 1.15rem;
+}
+
+.rail-panel {
+    margin-top: 1rem;
+    padding: 1rem;
+    border-radius: 22px;
+    background: rgba(8, 17, 26, 0.72);
+    border: 1px solid rgba(94, 234, 212, 0.12);
+}
+
+.rail-panel-title {
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+    font-size: 0.78rem;
+    color: var(--accent);
+    letter-spacing: 0.16em;
+    margin-bottom: 0.8rem;
+    text-transform: uppercase;
+}
+
+.telemetry-card + .telemetry-card {
+    margin-top: 0.65rem;
+}
+
+.telemetry-card {
+    padding: 0.8rem 0.9rem;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(94, 234, 212, 0.08);
+}
+
+.telemetry-label {
+    font-size: 0.68rem;
+    color: var(--muted);
+    margin-bottom: 0.2rem;
+}
+
+.telemetry-value {
+    color: #eefcf8;
+    font-size: 0.92rem;
+}
+
+.conversation-hangar {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+}
+
+.conversation-hangar .chat-container {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    border-radius: 30px;
+    background: linear-gradient(180deg, rgba(8, 17, 26, 0.92), rgba(8, 17, 26, 0.84));
+    overflow: hidden;
+}
+
+.chat-header {
+    padding: 1.2rem 1.4rem;
+    background:
+        linear-gradient(135deg, rgba(45, 212, 191, 0.12), rgba(15, 23, 42, 0)),
+        rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid rgba(94, 234, 212, 0.12);
+}
+
+.header-text h1 {
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+    color: #f8fffe;
+    letter-spacing: 0.04em;
+}
+
+.header-subtitle,
+.model-label,
+.model-capability-note,
+.message-time {
+    color: var(--muted);
+}
+
+.header-icon {
+    width: 58px;
+    height: 58px;
+    border-radius: 20px;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle, rgba(94, 234, 212, 0.22), rgba(15, 23, 42, 0.02));
+    box-shadow: inset 0 0 20px rgba(94, 234, 212, 0.2);
+}
+
+.settings-button,
+.clear-button,
+.attach-button,
+.send-button,
+.auto-route-button,
+.multi-agent-button,
+.queue-job-button {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(94, 234, 212, 0.16);
+    color: var(--text);
+    border-radius: 16px;
+    box-shadow: none;
+}
+
+.send-button,
+.queue-job-button,
+.auto-route-button,
+.multi-agent-button {
+    min-width: 56px;
+}
+
+.send-button:hover,
+.queue-job-button:hover,
+.auto-route-button:hover,
+.multi-agent-button:hover,
+.attach-button:hover,
+.settings-button:hover,
+.clear-button:hover {
+    background: rgba(94, 234, 212, 0.12);
+    border-color: rgba(94, 234, 212, 0.4);
+    transform: translateY(-2px);
+}
+
+.chat-messages {
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.02), transparent 18%),
+        rgba(3, 7, 18, 0.14);
+}
+
+.welcome-screen {
+    background:
+        radial-gradient(circle at top, rgba(94, 234, 212, 0.14), transparent 34%),
+        transparent;
+    color: var(--text);
+}
+
+.welcome-screen h2,
+.guideline-welcome h2 {
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+}
+
+.example-button {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(94, 234, 212, 0.12);
+    color: var(--text);
+    border-radius: 18px;
+}
+
+.example-button:hover {
+    background: rgba(94, 234, 212, 0.1);
+    border-color: rgba(94, 234, 212, 0.38);
+}
+
+.chat-input-area {
+    background: rgba(8, 17, 26, 0.88);
+    border-top: 1px solid rgba(94, 234, 212, 0.12);
+}
+
+.input-wrapper {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(94, 234, 212, 0.14);
+    border-radius: 22px;
+    padding: 0.45rem;
+}
+
+.chat-input,
+.model-select {
+    font-family: "Space Grotesk", "IBM Plex Sans JP", sans-serif;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(94, 234, 212, 0.14);
+    color: var(--text);
+    border-radius: 14px;
+}
+
+.chat-input::placeholder {
+    color: rgba(138, 162, 183, 0.88);
+}
+
+.status-indicator {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(94, 234, 212, 0.12);
+    color: var(--text);
+    border-radius: 14px;
+}
+
+.status-dot {
+    background: var(--accent);
+    box-shadow: 0 0 0 0 rgba(94, 234, 212, 0.45);
+}
+
+.message-wrapper.ai-wrapper .message,
+.message-wrapper.user-wrapper .message,
+.multi-agent-container,
+.attachment-chip,
+.diagnostics-panel,
+.execution-plan-panel,
+.route-info-panel,
+.review-panel,
+.approval-dialog,
+.agent-panel,
+.synthesis-panel {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(94, 234, 212, 0.14);
+    color: var(--text);
+}
+
+.message {
+    box-shadow: none;
+}
+
+.ai-message {
+    background: rgba(8, 17, 26, 0.74);
+}
+
+.user-message {
+    background: linear-gradient(135deg, rgba(45, 212, 191, 0.16), rgba(6, 182, 212, 0.08));
+}
+
+.message-header strong,
+.agent-title,
+.synthesis-title,
+.diagnostics-title,
+.execution-plan-title,
+.review-title {
+    color: #f8fffe;
+}
+
+.message-text,
+.agent-content,
+.synthesis-content,
+.diagnostics-item-line,
+.execution-plan-section-body,
+.review-section-body,
+.approval-dialog-header p,
+.attachment-chip-meta,
+.attachment-chip-preview {
+    color: var(--text);
+}
+
+.mission-rail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.mission-kicker {
+    font-size: 0.68rem;
+    color: var(--accent);
+}
+
+.mission-rail-header h2 {
+    margin: 0.2rem 0 0;
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+    color: #f8fffe;
+}
+
+.mission-refresh-button {
+    width: 44px;
+    height: 44px;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+}
+
+.mission-list,
+.mission-detail {
+    min-height: 0;
+}
+
+.mission-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    overflow: auto;
+    padding-right: 0.2rem;
+}
+
+.mission-empty {
+    padding: 1rem;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px dashed rgba(94, 234, 212, 0.16);
+    color: var(--muted);
+    text-align: center;
+}
+
+.mission-card {
+    text-align: left;
+    width: 100%;
+    padding: 0.95rem;
+    border-radius: 20px;
+    border: 1px solid rgba(94, 234, 212, 0.12);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text);
+    cursor: pointer;
+    transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
+}
+
+.mission-card:hover,
+.mission-card.selected {
+    transform: translateY(-2px);
+    border-color: rgba(94, 234, 212, 0.38);
+    background: rgba(94, 234, 212, 0.08);
+}
+
+.mission-card-header,
+.mission-meta-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.mission-card-mode {
+    font-family: "Orbitron", "Space Grotesk", sans-serif;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+}
+
+.mission-card-status,
+.mission-card-meta {
+    font-size: 0.78rem;
+    color: var(--muted);
+}
+
+.mission-card-prompt {
+    margin-top: 0.6rem;
+    color: #f8fffe;
+    line-height: 1.45;
+}
+
+.mission-card-summary {
+    margin-top: 0.55rem;
+    color: var(--muted);
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+
+.mission-detail {
+    margin-top: 1rem;
+    overflow: auto;
+    padding-right: 0.2rem;
+}
+
+.mission-detail-placeholder {
+    padding: 1rem;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px dashed rgba(94, 234, 212, 0.16);
+    color: var(--muted);
+}
+
+.mission-detail-header {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+}
+
+.mission-meta-row,
+.mission-section {
+    padding: 0.9rem;
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(94, 234, 212, 0.12);
+}
+
+.mission-meta-value {
+    text-align: right;
+    color: #f8fffe;
+}
+
+.mission-section {
+    margin-top: 0.8rem;
+}
+
+.mission-section-title {
+    margin: 0 0 0.45rem;
+    font-size: 0.72rem;
+    color: var(--accent);
+}
+
+.mission-section-body,
+.mission-list-items {
+    margin: 0;
+    color: var(--text);
+    line-height: 1.6;
+}
+
+.mission-list-items {
+    padding-left: 1.15rem;
+}
+
+.queue-job-button {
+    border-color: rgba(245, 158, 11, 0.18);
+}
+
+.queue-job-button:hover {
+    background: rgba(245, 158, 11, 0.12);
+    border-color: rgba(245, 158, 11, 0.38);
+}
+
+.status-completed,
+.mission-card-status.status-completed {
+    color: var(--success);
+}
+
+.status-failed,
+.mission-card-status.status-failed {
+    color: var(--danger);
+}
+
+.status-running,
+.mission-card-status.status-running {
+    color: var(--accent);
+}
+
+@media (max-width: 1280px) {
+    .app-shell {
+        grid-template-columns: 260px minmax(0, 1fr) 320px;
+    }
+}
+
+@media (max-width: 1080px) {
+    body {
+        overflow: auto;
+    }
+
+    .app-shell {
+        grid-template-columns: 1fr;
+        height: auto;
+        min-height: 100vh;
+        min-height: 100svh;
+        min-height: 100dvh;
+    }
+
+    .command-rail,
+    .mission-rail,
+    .conversation-hangar .chat-container {
+        min-height: auto;
+    }
+
+    .mode-tabs {
+        flex-direction: row;
+    }
+
+    .mission-detail-header {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .app-shell {
+        padding: 0.6rem;
+        gap: 0.75rem;
+    }
+
+    .command-rail,
+    .mission-rail,
+    .conversation-hangar .chat-container,
+    .top-nav,
+    .mode-selector {
+        border-radius: 20px;
+    }
+
+    .mode-tabs {
+        flex-direction: column;
+    }
+
+    .top-nav {
+        padding: 0.75rem;
+    }
+
+    .chat-header {
+        padding: 1rem;
+    }
+
+    .chat-input-area {
+        padding: 0.8rem;
+    }
+
+    .mission-card,
+    .mission-section,
+    .mission-meta-row {
+        padding: 0.8rem;
+    }
 }

@@ -26,6 +26,7 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.models import QueryType
 from session_state import SessionStore, UploadedDocument
+from job_state import JobStore, utcnow_iso
 from translations import get_text
 
 load_dotenv()
@@ -86,6 +87,8 @@ session_store = SessionStore(
     max_messages=SESSION_HISTORY_MESSAGES,
     store_dir=os.getenv("BACKEND_SESSION_STORE_PATH", "data/backend_sessions"),
 )
+job_store = JobStore(store_dir=os.getenv("BACKEND_JOB_STORE_PATH", "data/backend_jobs"))
+JOB_TASKS: dict[str, asyncio.Task] = {}
 BACKEND_UPLOAD_STORE_DIR = Path(os.getenv("BACKEND_UPLOAD_STORE_PATH", "data/backend_upload_assets"))
 if not BACKEND_UPLOAD_STORE_DIR.is_absolute():
     BACKEND_UPLOAD_STORE_DIR = BACKEND_DIR / BACKEND_UPLOAD_STORE_DIR
@@ -1324,6 +1327,58 @@ async def append_session_exchange(mode: str, session_id: str, user_prompt: str, 
     await session_store.save_session(mode, session_id)
 
 
+def _default_session_id_for_mode(mode: str) -> str:
+    if mode == MODE_GUIDELINE:
+        return "guideline"
+    if mode == MODE_IDOBATA:
+        return "idobata"
+    return "default"
+
+
+def _job_result_summary(result: dict[str, Any]) -> str:
+    for key in ("content", "synthesis_content", "planning_content", "business_content", "tech_content"):
+        text = _compact_text(result.get(key), limit=220)
+        if text:
+            return text
+    return ""
+
+
+def _serialize_job(job, *, include_result: bool = False) -> dict[str, Any]:
+    payload = {
+        "job_id": job.job_id,
+        "mode": job.mode,
+        "session_id": job.session_id,
+        "model_name": job.model_name,
+        "prompt": job.prompt,
+        "tone": job.tone,
+        "status": job.status,
+        "progress_stage": job.progress_stage,
+        "progress_note": job.progress_note,
+        "created_at": job.created_at,
+        "updated_at": job.updated_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+        "error_message": job.error_message,
+        "summary_text": job.summary_text,
+        "review_score": job.review_score,
+    }
+    if include_result:
+        payload["result"] = job.result
+    return payload
+
+
+async def _set_job_progress(job_id: str, stage: str, note: str = "") -> None:
+    job = await job_store.get_job(job_id)
+    started_at = job.started_at if job and job.started_at else utcnow_iso()
+    await job_store.update_job(
+        job_id,
+        progress_stage=stage,
+        progress_note=note,
+        status="running" if stage not in {"completed", "failed"} else stage,
+        started_at=started_at,
+    )
+
+
 async def generate_execution_plan(
     prompt: str,
     mode: str,
@@ -1458,6 +1513,338 @@ async def generate_route_decision(
         )
     )
     return decision
+
+
+async def _run_general_job(
+    prompt: str,
+    session_id: str,
+    model_name: str | None,
+    model_chat_client,
+    *,
+    progress: Callable[[str, str], Awaitable[None]],
+) -> dict[str, Any]:
+    mode = MODE_GENERAL
+    session = await session_store.get_session(mode, session_id)
+    async with session.lock:
+        await progress("planning", "")
+        plan = await generate_execution_plan(prompt, mode, session_id, model_name, model_chat_client)
+        agent_input = await build_agent_input(prompt, mode, session_id, model_name, include_history=True)
+
+        await progress("executing", "")
+        simple_agent = ChatAgent(
+            name="SimpleAgent",
+            chat_client=model_chat_client,
+            instructions=get_text('agent_simple_instructions', LANGUAGE),
+        )
+        response_parts: list[str] = []
+        async for update in simple_agent.run_stream(agent_input):
+            if update.text:
+                response_parts.append(update.text)
+
+        answer_text = "".join(response_parts).strip()
+        await append_session_exchange(mode, session_id, prompt, answer_text)
+
+        await progress("reviewing", "")
+        review = await generate_quality_review(
+            prompt,
+            mode,
+            answer_text,
+            model_name,
+            model_chat_client,
+            plan=plan,
+        )
+
+        return {
+            "mode": mode,
+            "plan": plan,
+            "content": answer_text,
+            "review": review,
+        }
+
+
+async def _run_guideline_job(
+    prompt: str,
+    session_id: str,
+    model_name: str | None,
+    model_chat_client,
+    *,
+    progress: Callable[[str, str], Awaitable[None]],
+) -> dict[str, Any]:
+    mode = MODE_GUIDELINE
+    session = await session_store.get_session(mode, session_id)
+    async with session.lock:
+        trace_token = SEARCH_TRACE_CONTEXT.set([])
+        try:
+            await progress("planning", "")
+            plan = await generate_execution_plan(prompt, mode, session_id, model_name, model_chat_client)
+            agent_input = await build_agent_input(prompt, mode, session_id, model_name, include_history=True)
+
+            await progress("executing", "")
+            search_agent = ChatAgent(
+                chat_client=model_chat_client,
+                instructions=get_text('agent_guideline_instructions', LANGUAGE),
+                tools=[search_tool],
+            )
+
+            response_parts: list[str] = []
+            async for update in search_agent.run_stream(agent_input):
+                if update.text:
+                    response_parts.append(update.text)
+
+            answer_text = "".join(response_parts).strip()
+            search_traces = SEARCH_TRACE_CONTEXT.get() or []
+            evidence_items = _collect_evidence_from_traces(search_traces)
+            await append_session_exchange(mode, session_id, prompt, answer_text)
+
+            await progress("reviewing", "")
+            review = await generate_quality_review(
+                prompt,
+                mode,
+                answer_text,
+                model_name,
+                model_chat_client,
+                plan=plan,
+                traces=search_traces,
+                evidence=evidence_items,
+            )
+
+            return {
+                "mode": mode,
+                "plan": plan,
+                "content": answer_text,
+                "traces": search_traces,
+                "evidence": evidence_items,
+                "review": review,
+            }
+        finally:
+            SEARCH_TRACE_CONTEXT.reset(trace_token)
+
+
+def _pick_board_participant_name(*candidates: Optional[str]) -> Optional[str]:
+    allowed = {"CEO", "CTO", "CFO", "COO"}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        value = str(candidate).strip()
+        if value in allowed:
+            return value
+    return None
+
+
+async def _run_idobata_job(
+    prompt: str,
+    session_id: str,
+    model_name: str | None,
+    tone: str,
+    model_chat_client,
+    *,
+    progress: Callable[[str, str], Awaitable[None]],
+) -> dict[str, Any]:
+    mode = MODE_IDOBATA
+    tone_instructions = {
+        "formal": get_text('tone_formal', LANGUAGE),
+        "balanced": get_text('tone_balanced', LANGUAGE),
+        "casual": get_text('tone_casual', LANGUAGE),
+        "concise": get_text('tone_concise', LANGUAGE),
+        "detailed": get_text('tone_detailed', LANGUAGE),
+    }
+    tone_suffix = tone_instructions.get(tone, tone_instructions["balanced"])
+
+    session = await session_store.get_session(mode, session_id)
+    async with session.lock:
+        await progress("planning", "")
+        ceo_agent = ChatAgent(
+            name="CEO",
+            chat_client=model_chat_client,
+            description="CEO leading the management meeting and presenting strategic direction",
+            instructions=get_text('agent_board_ceo_instructions', LANGUAGE, tone_suffix=tone_suffix),
+        )
+        cto_agent = ChatAgent(
+            name="CTO",
+            chat_client=model_chat_client,
+            description="Evaluates technical strategy and feasibility",
+            instructions=get_text('agent_board_cto_instructions', LANGUAGE, tone_suffix=tone_suffix),
+        )
+        cfo_agent = ChatAgent(
+            name="CFO",
+            chat_client=model_chat_client,
+            description="Evaluates financial viability and business potential",
+            instructions=get_text('agent_board_cfo_instructions', LANGUAGE, tone_suffix=tone_suffix),
+        )
+        coo_agent = ChatAgent(
+            name="COO",
+            chat_client=model_chat_client,
+            description="Integrates CxO opinions and creates execution plan",
+            instructions=get_text('agent_board_coo_instructions', LANGUAGE, tone_suffix=tone_suffix),
+        )
+
+        selector_state = {"calls": 0, "last_returned": None}
+        agent_sequence = ["CEO", "CTO", "CFO", "COO"]
+
+        def planning_selector(state) -> Optional[str]:
+            round_idx = getattr(state, "current_round", None)
+            if round_idx is None:
+                round_idx = getattr(state, "round_index", 0) or 0
+
+            history = getattr(state, "conversation", None)
+            if history is None:
+                history = getattr(state, "history", ()) or ()
+
+            if round_idx >= 10 or selector_state["calls"] >= 50:
+                return None
+
+            for turn in reversed(history):
+                text = ""
+                if hasattr(turn, "text"):
+                    text = turn.text or ""
+                elif hasattr(turn, "message") and hasattr(turn.message, "text"):
+                    text = turn.message.text or ""
+                if text and "PLAN_READY:" in text:
+                    return None
+
+            last_speaker: Optional[str] = None
+            for turn in reversed(history):
+                speaker = None
+                if hasattr(turn, "author_name"):
+                    speaker = turn.author_name
+                elif hasattr(turn, "speaker"):
+                    speaker = turn.speaker
+                elif hasattr(turn, "message") and hasattr(turn.message, "author_name"):
+                    speaker = turn.message.author_name
+                speaker = _pick_board_participant_name(speaker)
+                if speaker:
+                    last_speaker = speaker
+                    break
+
+            if not last_speaker:
+                next_speaker = agent_sequence[0]
+            else:
+                current_index = agent_sequence.index(last_speaker)
+                next_speaker = agent_sequence[(current_index + 1) % len(agent_sequence)]
+
+            if next_speaker == selector_state.get("last_returned"):
+                current_index = agent_sequence.index(next_speaker)
+                next_speaker = agent_sequence[(current_index + 1) % len(agent_sequence)]
+
+            selector_state["calls"] += 1
+            selector_state["last_returned"] = next_speaker
+            return next_speaker
+
+        workflow = (
+            GroupChatBuilder()
+            .participants([ceo_agent, cto_agent, cfo_agent, coo_agent])
+            .with_select_speaker_func(planning_selector, orchestrator_name="PlanningOrchestrator")
+            .build()
+        )
+
+        workflow_prompt = await build_agent_input(prompt, mode, session_id, model_name, include_history=True)
+        plan = await generate_execution_plan(prompt, mode, session_id, model_name, model_chat_client)
+
+        await progress("executing", "")
+        board_notes = {"CEO": [], "CTO": [], "CFO": [], "COO": []}
+        async for event in workflow.run_stream(workflow_prompt):
+            if not isinstance(event, AgentRunUpdateEvent):
+                continue
+
+            author_name = None
+            if event.data is not None:
+                if hasattr(event.data, "author_name") and event.data.author_name:
+                    author_name = event.data.author_name
+                elif hasattr(event.data, "message") and hasattr(event.data.message, "author_name"):
+                    author_name = event.data.message.author_name
+
+            agent_name = _pick_board_participant_name(author_name, getattr(event, "executor_id", None))
+            if not agent_name:
+                continue
+
+            text = ""
+            if event.data is not None and hasattr(event.data, "text"):
+                text = event.data.text or ""
+            elif event.data is not None and hasattr(event.data, "message") and hasattr(event.data.message, "text"):
+                text = event.data.message.text or ""
+            elif event.data is not None:
+                text = str(event.data)
+
+            if text:
+                board_notes[agent_name].append(text)
+
+        assistant_summary = (
+            "CEO:\n"
+            f"{''.join(board_notes['CEO']).strip()}\n\n"
+            "CTO:\n"
+            f"{''.join(board_notes['CTO']).strip()}\n\n"
+            "CFO:\n"
+            f"{''.join(board_notes['CFO']).strip()}\n\n"
+            "COO:\n"
+            f"{''.join(board_notes['COO']).strip()}"
+        )
+        await append_session_exchange(mode, session_id, prompt, assistant_summary)
+
+        await progress("reviewing", "")
+        review = await generate_quality_review(
+            prompt,
+            mode,
+            assistant_summary,
+            model_name,
+            model_chat_client,
+            plan=plan,
+        )
+
+        return {
+            "mode": mode,
+            "tone": tone,
+            "plan": plan,
+            "planning_content": "".join(board_notes["CEO"]).strip(),
+            "tech_content": "".join(board_notes["CTO"]).strip(),
+            "business_content": "".join(board_notes["CFO"]).strip(),
+            "synthesis_content": "".join(board_notes["COO"]).strip(),
+            "review": review,
+        }
+
+
+async def _run_background_job(job_id: str, mode: str, session_id: str, model_name: str, prompt: str, tone: str | None) -> None:
+    try:
+        await _set_job_progress(job_id, "planning")
+        model_chat_client = get_chat_client_for_model(model_name)
+        if model_chat_client is None:
+            raise ValueError(get_text('error_config_missing', LANGUAGE))
+
+        async def progress(stage: str, note: str = "") -> None:
+            await _set_job_progress(job_id, stage, note)
+
+        if mode == MODE_GENERAL:
+            result = await _run_general_job(prompt, session_id, model_name, model_chat_client, progress=progress)
+        elif mode == MODE_GUIDELINE:
+            result = await _run_guideline_job(prompt, session_id, model_name, model_chat_client, progress=progress)
+        elif mode == MODE_IDOBATA:
+            result = await _run_idobata_job(prompt, session_id, model_name, tone or "balanced", model_chat_client, progress=progress)
+        else:
+            raise ValueError(f"Unsupported job mode: {mode}")
+
+        review = result.get("review") if isinstance(result, dict) else None
+        review_score = review.get("score") if isinstance(review, dict) else None
+        await job_store.update_job(
+            job_id,
+            status="completed",
+            progress_stage="completed",
+            progress_note="",
+            completed_at=utcnow_iso(),
+            result=result,
+            summary_text=_job_result_summary(result),
+            review_score=review_score,
+        )
+    except Exception as exc:
+        await job_store.update_job(
+            job_id,
+            status="failed",
+            progress_stage="failed",
+            progress_note="",
+            completed_at=utcnow_iso(),
+            error_message=str(exc),
+        )
+        logger.exception("Background job failed (job_id=%s)", job_id)
+    finally:
+        JOB_TASKS.pop(job_id, None)
 
 
 def search_tool(
@@ -2217,6 +2604,49 @@ async def route_request(request: Request):
         model_chat_client,
     )
     return decision
+
+
+@app.get("/api/jobs")
+async def list_jobs(limit: int = 30):
+    jobs = await job_store.list_jobs(limit=max(1, min(limit, 100)))
+    return {"jobs": [_serialize_job(job) for job in jobs]}
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = await job_store.get_job(job_id)
+    if job is None:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return _serialize_job(job, include_result=True)
+
+
+@app.post("/api/jobs")
+async def create_job(request: Request):
+    body = await request.json()
+    prompt = body.get("prompt", "")
+    mode = str(body.get("mode", MODE_GENERAL) or MODE_GENERAL).strip().lower()
+    if mode not in {MODE_GENERAL, MODE_GUIDELINE, MODE_IDOBATA}:
+        return JSONResponse({"error": "unsupported mode"}, status_code=400)
+    if not prompt:
+        return JSONResponse({"error": "prompt required"}, status_code=400)
+
+    model_name = get_requested_model_name(body)
+    session_id = get_session_id(body, _default_session_id_for_mode(mode))
+    tone = body.get("tone", "balanced") if mode == MODE_IDOBATA else None
+
+    job_id = f"job_{uuid4().hex}"
+    job = await job_store.create_job(
+        job_id=job_id,
+        mode=mode,
+        session_id=session_id,
+        model_name=model_name,
+        prompt=prompt,
+        tone=tone,
+    )
+
+    task = asyncio.create_task(_run_background_job(job_id, mode, session_id, model_name, prompt, tone))
+    JOB_TASKS[job_id] = task
+    return _serialize_job(job, include_result=True)
 
 
 @app.get("/api/files")

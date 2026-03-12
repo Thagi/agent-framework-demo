@@ -10,15 +10,19 @@ let defaultModelId = null;
 let attachments = [];
 let attachmentsGuideline = [];
 let attachmentsIdobata = [];
+let missionJobs = [];
+let selectedJobId = null;
 const sessionId = 'default';
 const sessionIdGuideline = 'guideline';
 const sessionIdIdobata = 'idobata';
+const JOB_POLL_INTERVAL_MS = 5000;
 
 // DOM elements - general chat
 const chatMessages = document.getElementById('chatMessages');
 const welcomeScreen = document.getElementById('welcomeScreen');
 const promptInput = document.getElementById('promptInput');
 const sendButton = document.getElementById('sendButton');
+const queueJobButton = document.getElementById('queueJobButton');
 const autoRouteButton = document.getElementById('autoRouteButton');
 const multiAgentButton = document.getElementById('multiAgentButton');
 const clearButton = document.getElementById('clearButton');
@@ -34,6 +38,7 @@ const chatMessagesGuideline = document.getElementById('chatMessagesGuideline');
 const welcomeScreenGuideline = document.getElementById('welcomeScreenGuideline');
 const promptInputGuideline = document.getElementById('promptInputGuideline');
 const sendButtonGuideline = document.getElementById('sendButtonGuideline');
+const queueJobButtonGuideline = document.getElementById('queueJobButtonGuideline');
 const clearButtonGuideline = document.getElementById('clearButtonGuideline');
 const statusIndicatorGuideline = document.getElementById('statusIndicatorGuideline');
 const statusTextGuideline = document.getElementById('statusTextGuideline');
@@ -47,6 +52,7 @@ const chatMessagesIdobata = document.getElementById('chatMessagesIdobata');
 const welcomeScreenIdobata = document.getElementById('welcomeScreenIdobata');
 const promptInputIdobata = document.getElementById('promptInputIdobata');
 const sendButtonIdobata = document.getElementById('sendButtonIdobata');
+const queueJobButtonIdobata = document.getElementById('queueJobButtonIdobata');
 const clearButtonIdobata = document.getElementById('clearButtonIdobata');
 const statusIndicatorIdobata = document.getElementById('statusIndicatorIdobata');
 const statusTextIdobata = document.getElementById('statusTextIdobata');
@@ -73,6 +79,10 @@ const approvalReasons = document.getElementById('approvalReasons');
 const approvalApproveButton = document.getElementById('approvalApproveButton');
 const approvalRejectButton = document.getElementById('approvalRejectButton');
 const approvalReviseButton = document.getElementById('approvalReviseButton');
+const missionList = document.getElementById('missionList');
+const missionEmpty = document.getElementById('missionEmpty');
+const missionDetail = document.getElementById('missionDetail');
+const refreshJobsButton = document.getElementById('refreshJobsButton');
 let approvalResolver = null;
 
 const attachmentContexts = {
@@ -382,6 +392,9 @@ async function loadAvailableModels() {
 window.renderDynamicUi = () => {
     renderModelSelects();
     Object.values(attachmentContexts).forEach(renderAttachmentList);
+    renderMissionList();
+    const activeJob = selectedJobId ? missionJobs.find(job => job.job_id === selectedJobId) || null : null;
+    renderMissionDetail(activeJob);
 };
 
 function setStreamingUi(busy) {
@@ -432,16 +445,19 @@ function switchMode(mode) {
         guidelineChat.style.display = 'none';
         idobataChat.style.display = 'none';
         body.classList.remove('guideline-mode');
+        body.classList.remove('idobata-mode');
     } else if (mode === 'guideline') {
         generalChat.style.display = 'none';
         guidelineChat.style.display = 'flex';
         idobataChat.style.display = 'none';
         body.classList.add('guideline-mode');
+        body.classList.remove('idobata-mode');
     } else {
         generalChat.style.display = 'none';
         guidelineChat.style.display = 'none';
         idobataChat.style.display = 'flex';
         body.classList.remove('guideline-mode');
+        body.classList.add('idobata-mode');
     }
 
     // Close settings dropdown on mode switch
@@ -452,6 +468,7 @@ function switchMode(mode) {
 promptInput.addEventListener('input', updateButtons);
 promptInput.addEventListener('keydown', handleKeyDown);
 sendButton.addEventListener('click', () => startChat(false));
+queueJobButton.addEventListener('click', () => startQueuedJob('general'));
 autoRouteButton.addEventListener('click', startAutoRouteChat);
 multiAgentButton.addEventListener('click', () => startChat(true));
 clearButton.addEventListener('click', clearChat);
@@ -460,12 +477,14 @@ clearButton.addEventListener('click', clearChat);
 promptInputGuideline.addEventListener('input', updateButtonsGuideline);
 promptInputGuideline.addEventListener('keydown', handleKeyDownGuideline);
 sendButtonGuideline.addEventListener('click', startGuidelineChat);
+queueJobButtonGuideline.addEventListener('click', () => startQueuedJob('guideline'));
 clearButtonGuideline.addEventListener('click', clearGuidelineChat);
 
 // Event listeners - AI board meeting
 promptInputIdobata.addEventListener('input', updateButtonsIdobata);
 promptInputIdobata.addEventListener('keydown', handleKeyDownIdobata);
 sendButtonIdobata.addEventListener('click', startIdobataChat);
+queueJobButtonIdobata.addEventListener('click', () => startQueuedJob('idobata'));
 clearButtonIdobata.addEventListener('click', clearIdobataChat);
 
 Object.values(attachmentContexts).forEach(context => {
@@ -509,6 +528,9 @@ if (settingsButtonGuideline) {
 if (settingsButtonIdobata) {
     settingsButtonIdobata.addEventListener('click', () => toggleSettings('idobataChat'));
 }
+if (refreshJobsButton) {
+    refreshJobsButton.addEventListener('click', () => refreshJobs(false));
+}
 
 // Initialization
 updateButtons();
@@ -544,6 +566,7 @@ function updateButtons() {
     const hasText = promptInput.value.trim().length > 0;
     const hasModel = modelSelect && !modelSelect.disabled && !!modelSelect.value;
     sendButton.disabled = isBusy || !hasText || !hasModel;
+    queueJobButton.disabled = isBusy || !hasText || !hasModel;
     autoRouteButton.disabled = isBusy || !hasText || !hasModel;
     multiAgentButton.disabled = isBusy || !hasText || !hasModel;
 }
@@ -552,12 +575,14 @@ function updateButtonsGuideline() {
     const hasText = promptInputGuideline.value.trim().length > 0;
     const hasModel = modelSelectGuideline && !modelSelectGuideline.disabled && !!modelSelectGuideline.value;
     sendButtonGuideline.disabled = isBusy || !hasText || !hasModel;
+    queueJobButtonGuideline.disabled = isBusy || !hasText || !hasModel;
 }
 
 function updateButtonsIdobata() {
     const hasText = promptInputIdobata.value.trim().length > 0;
     const hasModel = modelSelectIdobata && !modelSelectIdobata.disabled && !!modelSelectIdobata.value;
     sendButtonIdobata.disabled = isBusy || !hasText || !hasModel;
+    queueJobButtonIdobata.disabled = isBusy || !hasText || !hasModel;
 }
 
 function handleKeyDown(event) {
@@ -849,6 +874,381 @@ async function initializeApp() {
     await loadAvailableModels();
     await initializeHistories();
     await initializeAttachments();
+    await refreshJobs(false);
+    window.setInterval(() => {
+        refreshJobs();
+    }, JOB_POLL_INTERVAL_MS);
+}
+
+function normalizeJob(job) {
+    if (!job || typeof job !== 'object' || !job.job_id) {
+        return null;
+    }
+
+    const rawReviewScore = Number(job.review_score);
+
+    return {
+        ...job,
+        created_at: job.created_at ? new Date(job.created_at) : null,
+        updated_at: job.updated_at ? new Date(job.updated_at) : null,
+        started_at: job.started_at ? new Date(job.started_at) : null,
+        completed_at: job.completed_at ? new Date(job.completed_at) : null,
+        review_score: Number.isFinite(rawReviewScore) ? rawReviewScore : null,
+        result: job.result && typeof job.result === 'object' ? job.result : null,
+        summary_text: typeof job.summary_text === 'string' ? job.summary_text : '',
+        error_message: typeof job.error_message === 'string' ? job.error_message : '',
+        progress_stage: typeof job.progress_stage === 'string' ? job.progress_stage : 'queued',
+        status: typeof job.status === 'string' ? job.status : 'queued',
+    };
+}
+
+function formatJobTimestamp(value) {
+    if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+        return '---';
+    }
+    return value.toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function getJobModeLabel(mode) {
+    if (mode === 'guideline') return t('route_mode_guideline');
+    if (mode === 'idobata') return t('route_mode_idobata');
+    return t('route_mode_general');
+}
+
+function getJobStatusLabel(status) {
+    if (status === 'running') return t('job_status_running');
+    if (status === 'completed') return t('job_status_completed');
+    if (status === 'failed') return t('job_status_failed');
+    return t('job_status_queued');
+}
+
+function getJobStageLabel(stage) {
+    if (stage === 'planning') return t('job_stage_planning');
+    if (stage === 'executing') return t('job_stage_executing');
+    if (stage === 'reviewing') return t('job_stage_reviewing');
+    if (stage === 'completed') return t('job_status_completed');
+    if (stage === 'failed') return t('job_status_failed');
+    return t('job_status_queued');
+}
+
+function getJobSummary(job) {
+    if (job.summary_text) return job.summary_text;
+    if (job.result && typeof job.result.content === 'string' && job.result.content.trim()) {
+        return job.result.content.trim();
+    }
+    if (job.result && typeof job.result.synthesis_content === 'string' && job.result.synthesis_content.trim()) {
+        return job.result.synthesis_content.trim();
+    }
+    return job.prompt || '';
+}
+
+function createMissionMeta(label, value) {
+    const row = document.createElement('div');
+    row.className = 'mission-meta-row';
+
+    const heading = document.createElement('div');
+    heading.className = 'mission-meta-label';
+    heading.textContent = label;
+
+    const body = document.createElement('div');
+    body.className = 'mission-meta-value';
+    body.textContent = value || '---';
+
+    row.appendChild(heading);
+    row.appendChild(body);
+    return row;
+}
+
+function createMissionSection(title, content, { markdown = false } = {}) {
+    const section = document.createElement('section');
+    section.className = 'mission-section';
+
+    const heading = document.createElement('h3');
+    heading.className = 'mission-section-title';
+    heading.textContent = title;
+
+    const body = document.createElement('div');
+    body.className = 'mission-section-body';
+    if (markdown) {
+        body.innerHTML = renderMarkdown(content || '');
+    } else {
+        body.textContent = content || '---';
+    }
+
+    section.appendChild(heading);
+    section.appendChild(body);
+    return section;
+}
+
+function createMissionList(items, title) {
+    const wrapper = document.createElement('section');
+    wrapper.className = 'mission-section';
+
+    const heading = document.createElement('h3');
+    heading.className = 'mission-section-title';
+    heading.textContent = title;
+    wrapper.appendChild(heading);
+
+    const normalized = Array.isArray(items) ? items.filter(Boolean) : [];
+    if (!normalized.length) {
+        const body = document.createElement('div');
+        body.className = 'mission-section-body';
+        body.textContent = '---';
+        wrapper.appendChild(body);
+        return wrapper;
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'mission-list-items';
+    normalized.forEach(item => {
+        const li = document.createElement('li');
+        li.textContent = item;
+        list.appendChild(li);
+    });
+    wrapper.appendChild(list);
+    return wrapper;
+}
+
+function renderMissionList() {
+    if (!missionList || !missionEmpty) return;
+
+    missionList.innerHTML = '';
+    missionEmpty.style.display = missionJobs.length ? 'none' : 'block';
+
+    missionJobs.forEach(job => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = `mission-card status-${job.status}${job.job_id === selectedJobId ? ' selected' : ''}`;
+        button.addEventListener('click', () => selectJob(job.job_id));
+
+        const header = document.createElement('div');
+        header.className = 'mission-card-header';
+
+        const mode = document.createElement('div');
+        mode.className = 'mission-card-mode';
+        mode.textContent = getJobModeLabel(job.mode);
+
+        const status = document.createElement('div');
+        status.className = `mission-card-status status-${job.status}`;
+        status.textContent = getJobStatusLabel(job.status);
+
+        header.appendChild(mode);
+        header.appendChild(status);
+
+        const prompt = document.createElement('div');
+        prompt.className = 'mission-card-prompt';
+        prompt.textContent = _truncateClientText(job.prompt, 120);
+
+        const meta = document.createElement('div');
+        meta.className = 'mission-card-meta';
+        const metaParts = [formatJobTimestamp(job.updated_at), getJobStageLabel(job.progress_stage)];
+        if (Number.isFinite(job.review_score)) {
+            metaParts.push(`${t('mission_score_label')}: ${job.review_score}/5`);
+        }
+        meta.textContent = metaParts.join(' / ');
+
+        const summary = document.createElement('div');
+        summary.className = 'mission-card-summary';
+        summary.textContent = _truncateClientText(getJobSummary(job), 180);
+
+        button.appendChild(header);
+        button.appendChild(prompt);
+        button.appendChild(meta);
+        button.appendChild(summary);
+        missionList.appendChild(button);
+    });
+}
+
+function renderMissionDetail(job) {
+    if (!missionDetail) return;
+
+    missionDetail.innerHTML = '';
+    if (!job) {
+        const placeholder = document.createElement('div');
+        placeholder.className = 'mission-detail-placeholder';
+        placeholder.textContent = t('mission_detail_placeholder');
+        missionDetail.appendChild(placeholder);
+        return;
+    }
+
+    const header = document.createElement('div');
+    header.className = 'mission-detail-header';
+    header.appendChild(createMissionMeta(t('mission_mode_label'), getJobModeLabel(job.mode)));
+    header.appendChild(createMissionMeta(t('mission_status_label'), `${getJobStatusLabel(job.status)} / ${getJobStageLabel(job.progress_stage)}`));
+    header.appendChild(createMissionMeta(t('mission_model_label'), job.model_name || '---'));
+    header.appendChild(createMissionMeta(t('mission_created_label'), formatJobTimestamp(job.created_at)));
+    if (Number.isFinite(job.review_score)) {
+        header.appendChild(createMissionMeta(t('mission_score_label'), `${job.review_score}/5`));
+    }
+    missionDetail.appendChild(header);
+    missionDetail.appendChild(createMissionSection(t('mission_prompt_label'), job.prompt));
+
+    if (job.error_message) {
+        missionDetail.appendChild(createMissionSection(t('mission_error_label'), job.error_message));
+    }
+
+    if (job.result) {
+        const result = job.result;
+        const primaryOutput = result.content || result.synthesis_content || result.planning_content || '';
+        if (primaryOutput) {
+            missionDetail.appendChild(createMissionSection(t('mission_output_label'), primaryOutput, { markdown: true }));
+        }
+        if (result.planning_content) {
+            missionDetail.appendChild(createMissionSection(t('agent_ceo'), result.planning_content, { markdown: true }));
+        }
+        if (result.tech_content) {
+            missionDetail.appendChild(createMissionSection(t('agent_cto'), result.tech_content, { markdown: true }));
+        }
+        if (result.business_content) {
+            missionDetail.appendChild(createMissionSection(t('agent_cfo'), result.business_content, { markdown: true }));
+        }
+        if (result.synthesis_content && result.content !== result.synthesis_content) {
+            missionDetail.appendChild(createMissionSection(t('agent_coo'), result.synthesis_content, { markdown: true }));
+        }
+
+        const normalizedPlan = normalizePlanData(result.plan);
+        if (normalizedPlan) {
+            missionDetail.appendChild(createMissionSection(t('plan_goal'), normalizedPlan.goal));
+            missionDetail.appendChild(createMissionList(normalizedPlan.steps, t('plan_steps')));
+            missionDetail.appendChild(createMissionList(normalizedPlan.tools, t('plan_tools')));
+        }
+
+        const normalizedReview = normalizeReviewData(result.review);
+        if (normalizedReview) {
+            missionDetail.appendChild(createMissionSection(t('review_verdict'), normalizedReview.verdict));
+            missionDetail.appendChild(createMissionList(normalizedReview.strengths, t('review_strengths')));
+            missionDetail.appendChild(createMissionList(normalizedReview.risks, t('review_risks')));
+            missionDetail.appendChild(createMissionList(normalizedReview.missing_info, t('review_missing_info')));
+            missionDetail.appendChild(createMissionSection(t('review_next_step'), normalizedReview.recommended_next_step));
+        }
+    }
+}
+
+async function loadJobDetail(jobId) {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+
+    const job = normalizeJob(payload);
+    if (!job) return null;
+
+    missionJobs = missionJobs.map(item => item.job_id === job.job_id ? { ...item, ...job } : item);
+    selectedJobId = job.job_id;
+    renderMissionList();
+    renderMissionDetail(job);
+    return job;
+}
+
+async function refreshJobs(preserveSelection = true) {
+    try {
+        const response = await fetch('/api/jobs?limit=30');
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+
+        missionJobs = Array.isArray(payload.jobs) ? payload.jobs.map(normalizeJob).filter(Boolean) : [];
+        if (!preserveSelection) {
+            selectedJobId = null;
+        }
+
+        if (selectedJobId && !missionJobs.some(job => job.job_id === selectedJobId)) {
+            selectedJobId = null;
+        }
+        if (!selectedJobId && missionJobs.length) {
+            selectedJobId = missionJobs[0].job_id;
+        }
+
+        renderMissionList();
+        if (selectedJobId) {
+            await loadJobDetail(selectedJobId);
+        } else {
+            renderMissionDetail(null);
+        }
+    } catch (error) {
+        console.error('Job refresh error:', error);
+    }
+}
+
+async function selectJob(jobId) {
+    try {
+        await loadJobDetail(jobId);
+    } catch (error) {
+        console.error('Job detail error:', error);
+    }
+}
+
+function _truncateClientText(value, limit = 160) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (text.length <= limit) {
+        return text;
+    }
+    return `${text.slice(0, limit).trim()}...`;
+}
+
+async function startQueuedJob(mode) {
+    if (isBusy) return;
+
+    let prompt = '';
+    let model = '';
+    let tone = null;
+    let input = null;
+    let updateFn = null;
+
+    if (mode === 'guideline') {
+        prompt = promptInputGuideline.value.trim();
+        model = modelSelectGuideline.value;
+        input = promptInputGuideline;
+        updateFn = updateButtonsGuideline;
+    } else if (mode === 'idobata') {
+        prompt = promptInputIdobata.value.trim();
+        model = modelSelectIdobata.value;
+        tone = toneSelectIdobata.value;
+        input = promptInputIdobata;
+        updateFn = updateButtonsIdobata;
+    } else {
+        prompt = promptInput.value.trim();
+        model = modelSelect.value;
+        input = promptInput;
+        updateFn = updateButtons;
+    }
+
+    if (!prompt || !model) return;
+
+    const approved = await ensureApprovalBeforeRun(mode, model, input);
+    if (!approved) return;
+
+    try {
+        const response = await fetch('/api/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                prompt,
+                mode,
+                model,
+                tone,
+            })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+            throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+
+        input.value = '';
+        if (typeof updateFn === 'function') {
+            updateFn();
+        }
+
+        await refreshJobs(false);
+        if (payload.job_id) {
+            await selectJob(payload.job_id);
+        }
+    } catch (error) {
+        console.error('Job start error:', error);
+        alert(`${t('error_prefix')}${error.message}`);
+    }
 }
 
 function hideWelcomeScreen() {

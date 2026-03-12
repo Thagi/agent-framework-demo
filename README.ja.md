@@ -24,6 +24,7 @@
 - **Gemini切替対応**: OpenAI / Azure OpenAI / Gemini Developer API / Vertex AI Gemini を provider 単位で切り替え可能
 - **Agent Routing**: 通常チャット画面から Auto Route を実行すると、`通常チャット / RAG検索 / マルチエージェント分析 / AI役員会議` を自動選択
 - **Quality Review**: 各モードの回答後に evaluator agent が `score / strengths / risks / missing info / next step` を返し、回答品質を可視化
+- **Mission Queue**: 各モードのプロンプトを非同期ジョブとして投入し、右側の Mission Queue で進捗と結果を追跡
 
 
 ### マルチエージェント分析（ConcurrentBuilder）
@@ -166,6 +167,7 @@ provider ごとの必須項目:
 - `PLAN_TIMEOUT_SECONDS` は回答前の plan 生成に使う上限秒数です。タイムアウト時は fallback plan に切り替えて本回答を継続します。
 - `ROUTE_TIMEOUT_SECONDS` は Auto Route 用の router 判定に使う上限秒数です。タイムアウト時はヒューリスティック判定へフォールバックします。
 - `ENABLE_EVALUATION_AGENT` と `EVALUATION_TIMEOUT_SECONDS` で回答後の quality review 実行有無と上限秒数を制御できます。
+- `BACKEND_JOB_STORE_PATH` で非同期ジョブの JSON 永続化先を変更できます。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 

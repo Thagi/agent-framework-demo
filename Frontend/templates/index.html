@@ -8,36 +8,62 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/site.css') }}">
 </head>
 <body>
-    <!-- 最上位ナビメニュー（Language Switcher） -->
-    <nav class="top-nav" aria-label="Language Switcher">
-        {% if enable_di_link %}
-        <a class="top-nav-link" href="https://ca-documentintelligence.ambitiousriver-a2c07a6d.japaneast.azurecontainerapps.io" target="_blank" rel="noopener noreferrer" data-i18n="doc_intelligence">Document Intelligence</a>
-        {% endif %}
-        <div class="language-switcher">
-            <button class="lang-button" onclick="setLanguage('ja')" data-lang="ja">🇯🇵 日本語</button>
-            <button class="lang-button" onclick="setLanguage('en')" data-lang="en">🇺🇸 English</button>
-        </div>
-    </nav>
+    <div class="app-shell">
+        <aside class="command-rail">
+            <div class="rail-brand">
+                <div class="rail-brand-mark">◉</div>
+                <div class="rail-brand-text">
+                    <div class="rail-brand-kicker" data-i18n="command_deck_kicker">Agent Framework Console</div>
+                    <div class="rail-brand-title" data-i18n="command_deck_title">Aegis Mission Deck</div>
+                    <p class="rail-brand-subtitle" data-i18n="command_deck_subtitle">複数 Agent との対話、探索、会議、非同期実行を一つのデッキで扱います。</p>
+                </div>
+            </div>
 
-    <!-- モード切替メニュー -->
-    <nav class="mode-selector">
-        <div class="mode-tabs">
-            <button class="mode-tab active" data-mode="general" onclick="switchMode('general')">
-                <span class="mode-icon">🤖</span>
-                <span data-i18n="mode_general">通常チャット</span>
-            </button>
-            <button class="mode-tab" data-mode="guideline" onclick="switchMode('guideline')">
-                <span class="mode-icon">📊</span>
-                <span data-i18n="mode_guideline">RAG検索</span>
-            </button>
-            <button class="mode-tab" data-mode="idobata" onclick="switchMode('idobata')">
-                <span class="mode-icon">🗣️</span>
-                <span data-i18n="mode_idobata">AI役員会議</span>
-            </button>
-        </div>
-    </nav>
+            <nav class="top-nav" aria-label="Language Switcher">
+                {% if enable_di_link %}
+                <a class="top-nav-link" href="https://ca-documentintelligence.ambitiousriver-a2c07a6d.japaneast.azurecontainerapps.io" target="_blank" rel="noopener noreferrer" data-i18n="doc_intelligence">Document Intelligence</a>
+                {% endif %}
+                <div class="language-switcher">
+                    <button class="lang-button" onclick="setLanguage('ja')" data-lang="ja">🇯🇵 日本語</button>
+                    <button class="lang-button" onclick="setLanguage('en')" data-lang="en">🇺🇸 English</button>
+                </div>
+            </nav>
 
-    <!-- 通常チャットモード -->
+            <nav class="mode-selector">
+                <div class="mode-tabs">
+                    <button class="mode-tab active" data-mode="general" onclick="switchMode('general')">
+                        <span class="mode-icon">🤖</span>
+                        <span data-i18n="mode_general">通常チャット</span>
+                    </button>
+                    <button class="mode-tab" data-mode="guideline" onclick="switchMode('guideline')">
+                        <span class="mode-icon">📊</span>
+                        <span data-i18n="mode_guideline">RAG検索</span>
+                    </button>
+                    <button class="mode-tab" data-mode="idobata" onclick="switchMode('idobata')">
+                        <span class="mode-icon">🗣️</span>
+                        <span data-i18n="mode_idobata">AI役員会議</span>
+                    </button>
+                </div>
+            </nav>
+
+            <div class="rail-panel">
+                <div class="rail-panel-title" data-i18n="telemetry_title">Telemetry</div>
+                <div class="telemetry-card">
+                    <div class="telemetry-label" data-i18n="telemetry_agents_label">Agents</div>
+                    <div class="telemetry-value">General / RAG / Board</div>
+                </div>
+                <div class="telemetry-card">
+                    <div class="telemetry-label" data-i18n="telemetry_memory_label">Memory</div>
+                    <div class="telemetry-value" data-i18n="telemetry_memory_value">Persistent session threads</div>
+                </div>
+                <div class="telemetry-card">
+                    <div class="telemetry-label" data-i18n="telemetry_jobs_label">Async</div>
+                    <div class="telemetry-value" data-i18n="telemetry_jobs_value">Mission queue enabled</div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="conversation-hangar">
     <div class="chat-container" id="generalChat">
         <div class="chat-header">
             <div class="header-content">
@@ -95,6 +121,9 @@
                           rows="1"></textarea>
                 <button id="sendButton" class="send-button" data-i18n="send_button" title="通常チャット" disabled>
                     <i class="fa-regular fa-paper-plane"></i>
+                </button>
+                <button id="queueJobButton" class="queue-job-button" data-i18n="queue_job_button" title="非同期ジョブとして実行" disabled>
+                    <i class="fas fa-satellite-dish"></i>
                 </button>
                 <button id="autoRouteButton" class="auto-route-button" data-i18n="auto_route_button" title="Auto Route" disabled>
                     <i class="fas fa-compass"></i>
@@ -170,6 +199,9 @@
                           rows="1"></textarea>
                 <button id="sendButtonGuideline" class="send-button" data-i18n="guideline_button" title="RAG検索" disabled>
                     <i class="fa-regular fa-paper-plane"></i>
+                </button>
+                <button id="queueJobButtonGuideline" class="queue-job-button" data-i18n="queue_job_button" title="非同期ジョブとして実行" disabled>
+                    <i class="fas fa-satellite-dish"></i>
                 </button>
             </div>
             <input id="fileInputGuideline" class="file-input-hidden" type="file" multiple accept=".txt,.md,.csv,.json,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif">
@@ -252,6 +284,9 @@
                 <button id="sendButtonIdobata" class="multi-agent-button" data-i18n="idobata_button" title="AI役員会議" disabled>
                     <i class="fas fa-users"></i>
                 </button>
+                <button id="queueJobButtonIdobata" class="queue-job-button" data-i18n="queue_job_button" title="非同期ジョブとして実行" disabled>
+                    <i class="fas fa-satellite-dish"></i>
+                </button>
             </div>
             <input id="fileInputIdobata" class="file-input-hidden" type="file" multiple accept=".txt,.md,.csv,.json,.pdf,.docx,.png,.jpg,.jpeg,.webp,.gif">
             <div class="attachment-list" id="attachmentListIdobata"></div>
@@ -260,6 +295,25 @@
                 <span id="statusTextIdobata" data-i18n="status_discussing">AI役員会議で協議中...</span>
             </div>
         </div>
+    </div>
+        </main>
+
+        <aside class="mission-rail">
+            <div class="mission-rail-header">
+                <div>
+                    <div class="mission-kicker" data-i18n="mission_kicker">Async Operations</div>
+                    <h2 data-i18n="mission_title">Mission Queue</h2>
+                </div>
+                <button id="refreshJobsButton" class="mission-refresh-button" type="button" title="Refresh">
+                    <i class="fas fa-rotate"></i>
+                </button>
+            </div>
+            <div class="mission-list" id="missionList"></div>
+            <div class="mission-empty" id="missionEmpty" data-i18n="mission_empty">まだ非同期ジョブはありません。</div>
+            <div class="mission-detail" id="missionDetail">
+                <div class="mission-detail-placeholder" data-i18n="mission_detail_placeholder">ジョブを選択すると詳細が表示されます。</div>
+            </div>
+        </aside>
     </div>
 
     <div class="approval-dialog-backdrop" id="approvalDialog" hidden>
