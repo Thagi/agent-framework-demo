@@ -61,6 +61,24 @@
                     <div class="telemetry-value" data-i18n="telemetry_jobs_value">Mission queue enabled</div>
                 </div>
             </div>
+
+            <div class="rail-panel">
+                <div class="rail-panel-title" data-i18n="audit_summary_title">Ops Ledger</div>
+                <div class="telemetry-card">
+                    <div class="telemetry-label" data-i18n="audit_total_runs_label">Runs</div>
+                    <div class="telemetry-value" id="auditTotalRunsValue">0</div>
+                </div>
+                <div class="telemetry-card">
+                    <div class="telemetry-label" data-i18n="audit_total_tokens_label">Tokens</div>
+                    <div class="telemetry-value" id="auditTotalTokensValue">0</div>
+                </div>
+                <div class="telemetry-card">
+                    <div class="telemetry-label" data-i18n="audit_total_cost_label">Cost</div>
+                    <div class="telemetry-value" id="auditTotalCostValue">-</div>
+                </div>
+                <div class="audit-feed" id="auditEventList"></div>
+                <div class="audit-empty" id="auditEventEmpty" data-i18n="audit_empty">監査ログはまだありません。</div>
+            </div>
         </aside>
 
         <main class="conversation-hangar">

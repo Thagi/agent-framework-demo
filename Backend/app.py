@@ -7,7 +7,7 @@ import logging
 import mimetypes
 from io import BytesIO
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Optional, Any, Awaitable, Callable
 from uuid import uuid4
@@ -26,6 +26,7 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents.models import QueryType
 from session_state import SessionStore, UploadedDocument
+from audit_state import AuditStore, AuditEvent
 from job_state import JobStore, utcnow_iso
 from translations import get_text
 
@@ -88,6 +89,7 @@ session_store = SessionStore(
     store_dir=os.getenv("BACKEND_SESSION_STORE_PATH", "data/backend_sessions"),
 )
 job_store = JobStore(store_dir=os.getenv("BACKEND_JOB_STORE_PATH", "data/backend_jobs"))
+audit_store = AuditStore(store_dir=os.getenv("BACKEND_AUDIT_STORE_PATH", "data/backend_audit"))
 JOB_TASKS: dict[str, asyncio.Task] = {}
 BACKEND_UPLOAD_STORE_DIR = Path(os.getenv("BACKEND_UPLOAD_STORE_PATH", "data/backend_upload_assets"))
 if not BACKEND_UPLOAD_STORE_DIR.is_absolute():
@@ -160,6 +162,9 @@ class ModelConfig:
     supports_multimodal: bool = False
     supports_image_input: bool = False
     supports_pdf_input: bool = False
+    input_cost_per_1k_tokens: float | None = None
+    output_cost_per_1k_tokens: float | None = None
+    currency: str | None = None
 
     @property
     def provider_label(self) -> str:
@@ -180,6 +185,17 @@ def _parse_bool_env(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_float_env(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    try:
+        return float(value.strip())
+    except ValueError:
+        logger.warning("Ignoring invalid float env %s=%r", name, value)
+        return None
 
 
 def _model_env_suffix(model_name: str) -> str:
@@ -265,6 +281,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
     supports_multimodal = _parse_bool_env(f"{prefix}SUPPORTS_MULTIMODAL", provider in {MODEL_PROVIDER_GEMINI, MODEL_PROVIDER_VERTEX_GEMINI})
     supports_image_input = _parse_bool_env(f"{prefix}SUPPORTS_IMAGE_INPUT", supports_multimodal)
     supports_pdf_input = _parse_bool_env(f"{prefix}SUPPORTS_PDF_INPUT", supports_multimodal)
+    input_cost_per_1k_tokens = _parse_float_env(f"{prefix}INPUT_COST_PER_1K_TOKENS")
+    output_cost_per_1k_tokens = _parse_float_env(f"{prefix}OUTPUT_COST_PER_1K_TOKENS")
+    currency = os.getenv(f"{prefix}CURRENCY", "").strip() or None
 
     if provider == MODEL_PROVIDER_AZURE:
         configured_values = {
@@ -288,6 +307,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 supports_multimodal=supports_multimodal,
                 supports_image_input=supports_image_input,
                 supports_pdf_input=supports_pdf_input,
+                input_cost_per_1k_tokens=input_cost_per_1k_tokens,
+                output_cost_per_1k_tokens=output_cost_per_1k_tokens,
+                currency=currency,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "ENDPOINT", "DEPLOYMENT"])
         return None
@@ -315,6 +337,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 supports_multimodal=supports_multimodal,
                 supports_image_input=supports_image_input,
                 supports_pdf_input=supports_pdf_input,
+                input_cost_per_1k_tokens=input_cost_per_1k_tokens,
+                output_cost_per_1k_tokens=output_cost_per_1k_tokens,
+                currency=currency,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "MODEL_ID"])
         return None
@@ -341,6 +366,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 supports_multimodal=supports_multimodal,
                 supports_image_input=supports_image_input,
                 supports_pdf_input=supports_pdf_input,
+                input_cost_per_1k_tokens=input_cost_per_1k_tokens,
+                output_cost_per_1k_tokens=output_cost_per_1k_tokens,
+                currency=currency,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["API_KEY", "MODEL_ID"])
         return None
@@ -372,6 +400,9 @@ def _build_model_config(model_id: str) -> ModelConfig | None:
                 supports_multimodal=supports_multimodal,
                 supports_image_input=supports_image_input,
                 supports_pdf_input=supports_pdf_input,
+                input_cost_per_1k_tokens=input_cost_per_1k_tokens,
+                output_cost_per_1k_tokens=output_cost_per_1k_tokens,
+                currency=currency,
             )
         _warn_incomplete_model_config(model_id, prefix, configured_values, ["MODEL_ID", "PROJECT", "LOCATION"])
         return None
@@ -610,6 +641,8 @@ def get_model_metadata() -> list[dict[str, object]]:
             "supports_multimodal": config.supports_multimodal,
             "supports_image_input": config.supports_image_input,
             "supports_pdf_input": config.supports_pdf_input,
+            "pricing_available": config.input_cost_per_1k_tokens is not None or config.output_cost_per_1k_tokens is not None,
+            "currency": config.currency,
         }
         for config in MODEL_REGISTRY.values()
     ]
@@ -627,6 +660,291 @@ def get_context_mode(body: dict, default_mode: str) -> str:
     raw_mode = body.get("context_mode", default_mode)
     mode = str(raw_mode).strip().lower() if raw_mode is not None else default_mode
     return mode if mode in CONTEXT_ALLOWED_MODES else default_mode
+
+
+def _normalize_token_value(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        numeric = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return max(numeric, 0)
+
+
+def _mapping_for_usage(value: object) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump()
+        if isinstance(dumped, dict):
+            return dumped
+    if hasattr(value, "to_dict"):
+        dumped = value.to_dict()
+        if isinstance(dumped, dict):
+            return dumped
+    if hasattr(value, "__dict__"):
+        return {
+            key: item
+            for key, item in vars(value).items()
+            if not key.startswith("_")
+        }
+    return None
+
+
+def _extract_usage_from_raw(raw: object) -> dict[str, int] | None:
+    if raw is None:
+        return None
+
+    visited: set[int] = set()
+
+    def _walk(value: object) -> dict[str, int] | None:
+        if value is None:
+            return None
+        identifier = id(value)
+        if identifier in visited:
+            return None
+        visited.add(identifier)
+
+        mapping = _mapping_for_usage(value)
+        if mapping:
+            prompt_tokens = None
+            completion_tokens = None
+            total_tokens = None
+
+            for key in ("prompt_tokens", "input_tokens", "prompt_token_count", "input_token_count"):
+                prompt_tokens = _normalize_token_value(mapping.get(key))
+                if prompt_tokens is not None:
+                    break
+
+            for key in ("completion_tokens", "output_tokens", "candidates_token_count", "output_token_count"):
+                completion_tokens = _normalize_token_value(mapping.get(key))
+                if completion_tokens is not None:
+                    break
+
+            for key in ("total_tokens", "total_token_count"):
+                total_tokens = _normalize_token_value(mapping.get(key))
+                if total_tokens is not None:
+                    break
+
+            if prompt_tokens is not None or completion_tokens is not None or total_tokens is not None:
+                if total_tokens is None:
+                    total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+                if prompt_tokens is None and completion_tokens is not None:
+                    prompt_tokens = max(total_tokens - completion_tokens, 0)
+                if completion_tokens is None and prompt_tokens is not None:
+                    completion_tokens = max(total_tokens - prompt_tokens, 0)
+                return {
+                    "prompt_tokens": prompt_tokens or 0,
+                    "completion_tokens": completion_tokens or 0,
+                    "total_tokens": total_tokens or 0,
+                }
+
+            for key in ("usage", "usage_metadata", "token_usage", "metadata", "response_metadata"):
+                nested = mapping.get(key)
+                result = _walk(nested)
+                if result is not None:
+                    return result
+
+            for nested in mapping.values():
+                if isinstance(nested, (dict, list, tuple)):
+                    result = _walk(nested)
+                    if result is not None:
+                        return result
+            return None
+
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                result = _walk(item)
+                if result is not None:
+                    return result
+        return None
+
+    return _walk(raw)
+
+
+def _prompt_text_for_usage(prompt_input: str | ChatMessage | object) -> str:
+    if isinstance(prompt_input, ChatMessage):
+        text_parts = [prompt_input.text or ""]
+        for content in getattr(prompt_input, "contents", []) or []:
+            if getattr(content, "type", "") == "text" and getattr(content, "text", None):
+                text_parts.append(content.text)
+            elif getattr(content, "type", "") in {"uri", "data"}:
+                media_type = getattr(content, "media_type", None) or "attachment"
+                text_parts.append(f"[{media_type}]")
+        return "\n".join(part for part in text_parts if part).strip()
+    return str(prompt_input or "").strip()
+
+
+def _estimate_token_count(value: str | ChatMessage | object, *, multiplier: float = 1.0) -> int:
+    text = _prompt_text_for_usage(value)
+    if not text:
+        return 0
+    estimated = max(int(round(len(text.encode("utf-8")) / 4.0)), 1)
+    return max(int(round(estimated * multiplier)), 0)
+
+
+def _build_usage_snapshot(
+    *,
+    prompt_input: str | ChatMessage | object,
+    output_text: str,
+    raw_usage: dict[str, int] | None = None,
+    prompt_multiplier: float = 1.0,
+) -> dict[str, object]:
+    estimated_prompt_tokens = _estimate_token_count(prompt_input, multiplier=prompt_multiplier)
+    estimated_completion_tokens = _estimate_token_count(output_text)
+
+    if raw_usage:
+        prompt_tokens = raw_usage.get("prompt_tokens", estimated_prompt_tokens)
+        completion_tokens = raw_usage.get("completion_tokens", estimated_completion_tokens)
+        total_tokens = raw_usage.get("total_tokens", prompt_tokens + completion_tokens)
+        token_source = "actual"
+    else:
+        prompt_tokens = estimated_prompt_tokens
+        completion_tokens = estimated_completion_tokens
+        total_tokens = prompt_tokens + completion_tokens
+        token_source = "estimated"
+
+    return {
+        "prompt_tokens": max(int(prompt_tokens), 0),
+        "completion_tokens": max(int(completion_tokens), 0),
+        "total_tokens": max(int(total_tokens), 0),
+        "token_source": token_source,
+    }
+
+
+def _merge_usage_snapshots(*snapshots: dict[str, object] | None) -> dict[str, object]:
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    sources: set[str] = set()
+
+    for snapshot in snapshots:
+        if not snapshot:
+            continue
+        prompt_tokens += int(snapshot.get("prompt_tokens") or 0)
+        completion_tokens += int(snapshot.get("completion_tokens") or 0)
+        total_tokens += int(snapshot.get("total_tokens") or 0)
+        source = str(snapshot.get("token_source") or "").strip()
+        if source:
+            sources.add(source)
+
+    if not sources:
+        token_source = "unknown"
+    elif sources == {"actual"}:
+        token_source = "actual"
+    elif sources == {"estimated"}:
+        token_source = "estimated"
+    else:
+        token_source = "mixed"
+
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "token_source": token_source,
+    }
+
+
+def _estimate_cost_for_usage(model_config: ModelConfig | None, usage: dict[str, object]) -> tuple[float | None, str | None]:
+    if model_config is None:
+        return None, None
+
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or 0)
+    cost = 0.0
+    has_pricing = False
+
+    if model_config.input_cost_per_1k_tokens is not None:
+        cost += (prompt_tokens / 1000.0) * model_config.input_cost_per_1k_tokens
+        has_pricing = True
+    if model_config.output_cost_per_1k_tokens is not None:
+        cost += (completion_tokens / 1000.0) * model_config.output_cost_per_1k_tokens
+        has_pricing = True
+
+    return (round(cost, 6), model_config.currency or "USD") if has_pricing else (None, model_config.currency)
+
+
+async def _session_context_metrics(mode: str, session_id: str) -> dict[str, int]:
+    session = await session_store.get_session(mode, session_id)
+    history_message_count = 0
+    if session.thread.message_store is not None:
+        try:
+            history_messages = await session.thread.message_store.list_messages()
+            history_message_count = len(history_messages)
+        except Exception:
+            history_message_count = 0
+
+    return {
+        "history_message_count": history_message_count,
+        "attachment_count": len(session.uploaded_documents),
+    }
+
+
+async def _record_audit_event(
+    *,
+    request_id: str,
+    mode: str,
+    session_id: str,
+    session_mode: str | None = None,
+    model_name: str | None,
+    prompt: str,
+    response_text: str,
+    status: str,
+    duration_ms: int,
+    planning_duration_ms: int | None = None,
+    execution_duration_ms: int | None = None,
+    review_duration_ms: int | None = None,
+    usage: dict[str, object] | None = None,
+    traces: list[dict[str, Any]] | None = None,
+    evidence: list[dict[str, str]] | None = None,
+    review: dict[str, object] | None = None,
+    route_mode: str | None = None,
+    route_confidence: float | None = None,
+    error_message: str | None = None,
+    job_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    model_config = get_model_config_for_model(model_name)
+    cost, currency = _estimate_cost_for_usage(model_config, usage or {})
+    context_metrics = await _session_context_metrics(session_mode or mode, session_id)
+    tool_names = sorted({str(trace.get("tool") or "").strip() for trace in (traces or []) if trace.get("tool")})
+
+    audit_event = AuditEvent(
+        event_id=f"audit_{uuid4().hex}",
+        request_id=request_id,
+        mode=mode,
+        session_id=session_id,
+        model_name=model_name or (model_config.model_id if model_config else "-"),
+        provider=model_config.provider if model_config else None,
+        target=model_config.target_name if model_config else None,
+        status=status,
+        duration_ms=duration_ms,
+        planning_duration_ms=planning_duration_ms,
+        execution_duration_ms=execution_duration_ms,
+        review_duration_ms=review_duration_ms,
+        prompt_tokens=int((usage or {}).get("prompt_tokens") or 0),
+        completion_tokens=int((usage or {}).get("completion_tokens") or 0),
+        total_tokens=int((usage or {}).get("total_tokens") or 0),
+        token_source=str((usage or {}).get("token_source") or "unknown"),
+        estimated_cost=cost,
+        currency=currency,
+        tool_names=tool_names,
+        trace_count=len(traces or []),
+        evidence_count=len(evidence or []),
+        attachment_count=context_metrics["attachment_count"],
+        history_message_count=context_metrics["history_message_count"],
+        review_score=review.get("score") if isinstance(review, dict) else None,
+        route_mode=route_mode,
+        route_confidence=route_confidence,
+        prompt_excerpt=_compact_text(prompt, limit=220),
+        response_excerpt=_compact_text(response_text, limit=220),
+        error_message=_compact_text(error_message, limit=240) if error_message else None,
+        job_id=job_id,
+        metadata=metadata or {},
+    )
+    await audit_store.record_event(audit_event)
+    return asdict(audit_event)
 
 
 def _message_role_value(message: ChatMessage) -> str:
@@ -1385,7 +1703,9 @@ async def generate_execution_plan(
     session_id: str,
     model_name: str | None,
     model_chat_client,
-) -> dict[str, object]:
+    *,
+    include_metrics: bool = False,
+) -> dict[str, object] | tuple[dict[str, object], dict[str, object]]:
     planner_agent = ChatAgent(
         name="Planner",
         chat_client=model_chat_client,
@@ -1404,21 +1724,42 @@ async def generate_execution_plan(
         include_history=True,
     )
 
-    async def _run_planner() -> dict[str, object]:
+    async def _run_planner() -> tuple[dict[str, object], dict[str, object]]:
+        stage_start = time.perf_counter()
         planner_parts: list[str] = []
+        last_usage: dict[str, int] | None = None
         async for update in planner_agent.run_stream(planner_prompt):
+            usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+            if usage is not None:
+                last_usage = usage
             if update.text:
                 planner_parts.append(update.text)
-        return _extract_plan_payload("".join(planner_parts), prompt)
+        planner_output = "".join(planner_parts)
+        stage_metrics = _build_usage_snapshot(
+            prompt_input=planner_prompt,
+            output_text=planner_output,
+            raw_usage=last_usage,
+        )
+        stage_metrics["duration_ms"] = int((time.perf_counter() - stage_start) * 1000)
+        return _extract_plan_payload(planner_output, prompt), stage_metrics
 
     try:
-        return await asyncio.wait_for(_run_planner(), timeout=PLAN_TIMEOUT_SECONDS)
+        plan, metrics = await asyncio.wait_for(_run_planner(), timeout=PLAN_TIMEOUT_SECONDS)
+        return (plan, metrics) if include_metrics else plan
     except asyncio.TimeoutError:
         logger.warning("Planner timed out after %.1fs for model '%s'. Falling back to default plan.", PLAN_TIMEOUT_SECONDS, model_name)
-        return _fallback_execution_plan(prompt)
+        fallback = _fallback_execution_plan(prompt)
+        metrics = _build_usage_snapshot(prompt_input=planner_prompt, output_text=json.dumps(fallback, ensure_ascii=False))
+        metrics["duration_ms"] = int(PLAN_TIMEOUT_SECONDS * 1000)
+        metrics["token_source"] = "estimated"
+        return (fallback, metrics) if include_metrics else fallback
     except Exception:
         logger.exception("Planner failed for model '%s'. Falling back to default plan.", model_name)
-        return _fallback_execution_plan(prompt)
+        fallback = _fallback_execution_plan(prompt)
+        metrics = _build_usage_snapshot(prompt_input=planner_prompt, output_text=json.dumps(fallback, ensure_ascii=False))
+        metrics["duration_ms"] = 0
+        metrics["token_source"] = "estimated"
+        return (fallback, metrics) if include_metrics else fallback
 
 
 async def generate_quality_review(
@@ -1431,9 +1772,10 @@ async def generate_quality_review(
     plan: dict[str, object] | None = None,
     traces: list[dict[str, Any]] | None = None,
     evidence: list[dict[str, str]] | None = None,
-) -> dict[str, object] | None:
+    include_metrics: bool = False,
+) -> dict[str, object] | tuple[dict[str, object] | None, dict[str, object] | None] | None:
     if not ENABLE_EVALUATION_AGENT:
-        return None
+        return (None, None) if include_metrics else None
 
     evaluator_agent = ChatAgent(
         name="Evaluator",
@@ -1449,28 +1791,48 @@ async def generate_quality_review(
         evidence=evidence,
     )
 
-    async def _run_evaluator() -> dict[str, object]:
+    async def _run_evaluator() -> tuple[dict[str, object], dict[str, object]]:
+        stage_start = time.perf_counter()
         evaluator_parts: list[str] = []
+        last_usage: dict[str, int] | None = None
         async for update in evaluator_agent.run_stream(evaluator_prompt):
+            usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+            if usage is not None:
+                last_usage = usage
             if update.text:
                 evaluator_parts.append(update.text)
-        return _extract_quality_review_payload("".join(evaluator_parts), prompt, answer_text)
+        evaluator_output = "".join(evaluator_parts)
+        stage_metrics = _build_usage_snapshot(
+            prompt_input=evaluator_prompt,
+            output_text=evaluator_output,
+            raw_usage=last_usage,
+        )
+        stage_metrics["duration_ms"] = int((time.perf_counter() - stage_start) * 1000)
+        return _extract_quality_review_payload(evaluator_output, prompt, answer_text), stage_metrics
 
     try:
         logger.info(get_text('log_review_start', LANGUAGE, model=model_name or "-"))
-        review = await asyncio.wait_for(_run_evaluator(), timeout=EVALUATION_TIMEOUT_SECONDS)
+        review, metrics = await asyncio.wait_for(_run_evaluator(), timeout=EVALUATION_TIMEOUT_SECONDS)
         logger.info(get_text('log_review_complete', LANGUAGE, score=review["score"]))
-        return review
+        return (review, metrics) if include_metrics else review
     except asyncio.TimeoutError:
         logger.warning(
             "Evaluator timed out after %.1fs for model '%s'. Falling back to default review.",
             EVALUATION_TIMEOUT_SECONDS,
             model_name,
         )
-        return _fallback_quality_review(prompt, answer_text)
+        fallback = _fallback_quality_review(prompt, answer_text)
+        metrics = _build_usage_snapshot(prompt_input=evaluator_prompt, output_text=json.dumps(fallback, ensure_ascii=False))
+        metrics["duration_ms"] = int(EVALUATION_TIMEOUT_SECONDS * 1000)
+        metrics["token_source"] = "estimated"
+        return (fallback, metrics) if include_metrics else fallback
     except Exception:
         logger.exception("Evaluator failed for model '%s'. Falling back to default review.", model_name)
-        return _fallback_quality_review(prompt, answer_text)
+        fallback = _fallback_quality_review(prompt, answer_text)
+        metrics = _build_usage_snapshot(prompt_input=evaluator_prompt, output_text=json.dumps(fallback, ensure_ascii=False))
+        metrics["duration_ms"] = 0
+        metrics["token_source"] = "estimated"
+        return (fallback, metrics) if include_metrics else fallback
 
 
 async def generate_route_decision(
@@ -1526,39 +1888,65 @@ async def _run_general_job(
     mode = MODE_GENERAL
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
+        run_start = time.perf_counter()
         await progress("planning", "")
-        plan = await generate_execution_plan(prompt, mode, session_id, model_name, model_chat_client)
+        plan, plan_metrics = await generate_execution_plan(
+            prompt,
+            mode,
+            session_id,
+            model_name,
+            model_chat_client,
+            include_metrics=True,
+        )
         agent_input = await build_agent_input(prompt, mode, session_id, model_name, include_history=True)
 
         await progress("executing", "")
+        execution_start = time.perf_counter()
         simple_agent = ChatAgent(
             name="SimpleAgent",
             chat_client=model_chat_client,
             instructions=get_text('agent_simple_instructions', LANGUAGE),
         )
         response_parts: list[str] = []
+        last_usage: dict[str, int] | None = None
         async for update in simple_agent.run_stream(agent_input):
+            usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+            if usage is not None:
+                last_usage = usage
             if update.text:
                 response_parts.append(update.text)
 
         answer_text = "".join(response_parts).strip()
+        execution_metrics = _build_usage_snapshot(
+            prompt_input=agent_input,
+            output_text=answer_text,
+            raw_usage=last_usage,
+        )
+        execution_metrics["duration_ms"] = int((time.perf_counter() - execution_start) * 1000)
         await append_session_exchange(mode, session_id, prompt, answer_text)
 
         await progress("reviewing", "")
-        review = await generate_quality_review(
+        review, review_metrics = await generate_quality_review(
             prompt,
             mode,
             answer_text,
             model_name,
             model_chat_client,
             plan=plan,
+            include_metrics=True,
         )
-
         return {
             "mode": mode,
             "plan": plan,
             "content": answer_text,
             "review": review,
+            "audit_context": {
+                "duration_ms": int((time.perf_counter() - run_start) * 1000),
+                "planning_duration_ms": int(plan_metrics.get("duration_ms") or 0),
+                "execution_duration_ms": int(execution_metrics.get("duration_ms") or 0),
+                "review_duration_ms": int((review_metrics or {}).get("duration_ms") or 0),
+                "usage": _merge_usage_snapshots(plan_metrics, execution_metrics, review_metrics),
+            },
         }
 
 
@@ -1573,13 +1961,22 @@ async def _run_guideline_job(
     mode = MODE_GUIDELINE
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
+        run_start = time.perf_counter()
         trace_token = SEARCH_TRACE_CONTEXT.set([])
         try:
             await progress("planning", "")
-            plan = await generate_execution_plan(prompt, mode, session_id, model_name, model_chat_client)
+            plan, plan_metrics = await generate_execution_plan(
+                prompt,
+                mode,
+                session_id,
+                model_name,
+                model_chat_client,
+                include_metrics=True,
+            )
             agent_input = await build_agent_input(prompt, mode, session_id, model_name, include_history=True)
 
             await progress("executing", "")
+            execution_start = time.perf_counter()
             search_agent = ChatAgent(
                 chat_client=model_chat_client,
                 instructions=get_text('agent_guideline_instructions', LANGUAGE),
@@ -1587,17 +1984,27 @@ async def _run_guideline_job(
             )
 
             response_parts: list[str] = []
+            last_usage: dict[str, int] | None = None
             async for update in search_agent.run_stream(agent_input):
+                usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+                if usage is not None:
+                    last_usage = usage
                 if update.text:
                     response_parts.append(update.text)
 
             answer_text = "".join(response_parts).strip()
+            execution_metrics = _build_usage_snapshot(
+                prompt_input=agent_input,
+                output_text=answer_text,
+                raw_usage=last_usage,
+            )
+            execution_metrics["duration_ms"] = int((time.perf_counter() - execution_start) * 1000)
             search_traces = SEARCH_TRACE_CONTEXT.get() or []
             evidence_items = _collect_evidence_from_traces(search_traces)
             await append_session_exchange(mode, session_id, prompt, answer_text)
 
             await progress("reviewing", "")
-            review = await generate_quality_review(
+            review, review_metrics = await generate_quality_review(
                 prompt,
                 mode,
                 answer_text,
@@ -1606,6 +2013,7 @@ async def _run_guideline_job(
                 plan=plan,
                 traces=search_traces,
                 evidence=evidence_items,
+                include_metrics=True,
             )
 
             return {
@@ -1615,6 +2023,13 @@ async def _run_guideline_job(
                 "traces": search_traces,
                 "evidence": evidence_items,
                 "review": review,
+                "audit_context": {
+                    "duration_ms": int((time.perf_counter() - run_start) * 1000),
+                    "planning_duration_ms": int(plan_metrics.get("duration_ms") or 0),
+                    "execution_duration_ms": int(execution_metrics.get("duration_ms") or 0),
+                    "review_duration_ms": int((review_metrics or {}).get("duration_ms") or 0),
+                    "usage": _merge_usage_snapshots(plan_metrics, execution_metrics, review_metrics),
+                },
             }
         finally:
             SEARCH_TRACE_CONTEXT.reset(trace_token)
@@ -1652,6 +2067,7 @@ async def _run_idobata_job(
 
     session = await session_store.get_session(mode, session_id)
     async with session.lock:
+        run_start = time.perf_counter()
         await progress("planning", "")
         ceo_agent = ChatAgent(
             name="CEO",
@@ -1738,9 +2154,17 @@ async def _run_idobata_job(
         )
 
         workflow_prompt = await build_agent_input(prompt, mode, session_id, model_name, include_history=True)
-        plan = await generate_execution_plan(prompt, mode, session_id, model_name, model_chat_client)
+        plan, plan_metrics = await generate_execution_plan(
+            prompt,
+            mode,
+            session_id,
+            model_name,
+            model_chat_client,
+            include_metrics=True,
+        )
 
         await progress("executing", "")
+        execution_start = time.perf_counter()
         board_notes = {"CEO": [], "CTO": [], "CFO": [], "COO": []}
         async for event in workflow.run_stream(workflow_prompt):
             if not isinstance(event, AgentRunUpdateEvent):
@@ -1768,6 +2192,21 @@ async def _run_idobata_job(
             if text:
                 board_notes[agent_name].append(text)
 
+        board_output = "".join(
+            [
+                "".join(board_notes["CEO"]),
+                "".join(board_notes["CTO"]),
+                "".join(board_notes["CFO"]),
+                "".join(board_notes["COO"]),
+            ]
+        )
+        execution_metrics = _build_usage_snapshot(
+            prompt_input=workflow_prompt,
+            output_text=board_output,
+            prompt_multiplier=4.0,
+        )
+        execution_metrics["duration_ms"] = int((time.perf_counter() - execution_start) * 1000)
+
         assistant_summary = (
             "CEO:\n"
             f"{''.join(board_notes['CEO']).strip()}\n\n"
@@ -1781,13 +2220,14 @@ async def _run_idobata_job(
         await append_session_exchange(mode, session_id, prompt, assistant_summary)
 
         await progress("reviewing", "")
-        review = await generate_quality_review(
+        review, review_metrics = await generate_quality_review(
             prompt,
             mode,
             assistant_summary,
             model_name,
             model_chat_client,
             plan=plan,
+            include_metrics=True,
         )
 
         return {
@@ -1799,6 +2239,13 @@ async def _run_idobata_job(
             "business_content": "".join(board_notes["CFO"]).strip(),
             "synthesis_content": "".join(board_notes["COO"]).strip(),
             "review": review,
+            "audit_context": {
+                "duration_ms": int((time.perf_counter() - run_start) * 1000),
+                "planning_duration_ms": int(plan_metrics.get("duration_ms") or 0),
+                "execution_duration_ms": int(execution_metrics.get("duration_ms") or 0),
+                "review_duration_ms": int((review_metrics or {}).get("duration_ms") or 0),
+                "usage": _merge_usage_snapshots(plan_metrics, execution_metrics, review_metrics),
+            },
         }
 
 
@@ -1821,8 +2268,31 @@ async def _run_background_job(job_id: str, mode: str, session_id: str, model_nam
         else:
             raise ValueError(f"Unsupported job mode: {mode}")
 
+        audit_context = result.pop("audit_context", {}) if isinstance(result, dict) else {}
         review = result.get("review") if isinstance(result, dict) else None
         review_score = review.get("score") if isinstance(review, dict) else None
+        response_text = _job_result_summary(result) if isinstance(result, dict) else ""
+        audit_payload = await _record_audit_event(
+            request_id=job_id,
+            mode=mode,
+            session_id=session_id,
+            model_name=model_name,
+            prompt=prompt,
+            response_text=response_text,
+            status="completed",
+            duration_ms=int(audit_context.get("duration_ms") or 0),
+            planning_duration_ms=int(audit_context.get("planning_duration_ms") or 0) or None,
+            execution_duration_ms=int(audit_context.get("execution_duration_ms") or 0) or None,
+            review_duration_ms=int(audit_context.get("review_duration_ms") or 0) or None,
+            usage=audit_context.get("usage") if isinstance(audit_context, dict) else None,
+            traces=result.get("traces") if isinstance(result, dict) else None,
+            evidence=result.get("evidence") if isinstance(result, dict) else None,
+            review=review,
+            job_id=job_id,
+            metadata={"kind": "job", "tone": tone} if tone else {"kind": "job"},
+        )
+        if isinstance(result, dict):
+            result["audit"] = audit_payload
         await job_store.update_job(
             job_id,
             status="completed",
@@ -1834,6 +2304,19 @@ async def _run_background_job(job_id: str, mode: str, session_id: str, model_nam
             review_score=review_score,
         )
     except Exception as exc:
+        await _record_audit_event(
+            request_id=job_id,
+            mode=mode,
+            session_id=session_id,
+            model_name=model_name,
+            prompt=prompt,
+            response_text="",
+            status="failed",
+            duration_ms=0,
+            error_message=str(exc),
+            job_id=job_id,
+            metadata={"kind": "job", "tone": tone} if tone else {"kind": "job"},
+        )
         await job_store.update_job(
             job_id,
             status="failed",
@@ -1955,6 +2438,18 @@ async def api_stream(request: Request):
     model_name = get_requested_model_name(body)
     session_id = get_session_id(body)
     context_mode = get_context_mode(body, MODE_GENERAL)
+    route_mode = str(body.get("route_mode", "") or "").strip() or None
+    route_confidence = body.get("route_confidence")
+    try:
+        route_confidence = float(route_confidence) if route_confidence is not None else None
+    except (TypeError, ValueError):
+        route_confidence = None
+    route_mode = str(body.get("route_mode", "") or "").strip() or None
+    route_confidence = body.get("route_confidence")
+    try:
+        route_confidence = float(route_confidence) if route_confidence is not None else None
+    except (TypeError, ValueError):
+        route_confidence = None
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     
@@ -1975,7 +2470,14 @@ async def api_stream(request: Request):
         async with session.lock:
             try:
                 yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
-                plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
+                plan, plan_metrics = await generate_execution_plan(
+                    prompt,
+                    context_mode,
+                    session_id,
+                    model_name,
+                    model_chat_client,
+                    include_metrics=True,
+                )
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
                 agent_input = await build_agent_input(
                     prompt,
@@ -2001,7 +2503,11 @@ async def api_stream(request: Request):
                 first_chunk = True
                 chunk_count = 0
                 response_parts: list[str] = []
+                last_usage: dict[str, int] | None = None
                 async for update in simple_agent.run_stream(agent_input):
+                    usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+                    if usage is not None:
+                        last_usage = usage
                     if update.text:
                         if first_chunk:
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
@@ -2011,22 +2517,63 @@ async def api_stream(request: Request):
                         yield json.dumps({"type": "delta", "content": update.text}, ensure_ascii=False) + "\n"
 
                 answer_text = "".join(response_parts).strip()
+                execution_metrics = _build_usage_snapshot(
+                    prompt_input=agent_input,
+                    output_text=answer_text,
+                    raw_usage=last_usage,
+                )
+                execution_metrics["duration_ms"] = int((time.time() - stream_start) * 1000)
                 await append_session_exchange(context_mode, session_id, prompt, answer_text)
-                review = await generate_quality_review(
+                review, review_metrics = await generate_quality_review(
                     prompt,
                     context_mode,
                     answer_text,
                     model_name,
                     model_chat_client,
                     plan=plan,
+                    include_metrics=True,
                 )
                 if review:
                     yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=context_mode,
+                    session_id=session_id,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text=answer_text,
+                    status="completed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    planning_duration_ms=int(plan_metrics.get("duration_ms") or 0),
+                    execution_duration_ms=int(execution_metrics.get("duration_ms") or 0),
+                    review_duration_ms=int((review_metrics or {}).get("duration_ms") or 0),
+                    usage=_merge_usage_snapshots(plan_metrics, execution_metrics, review_metrics),
+                    review=review,
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    metadata={"kind": "stream"},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
             except Exception as e:
                 logger.exception("[%s] Regular chat stream failed", request_id)
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=context_mode,
+                    session_id=session_id,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text="",
+                    status="failed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    error_message=str(e),
+                    metadata={"kind": "stream"},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
                 yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(generator(), media_type="application/x-ndjson")
@@ -2045,6 +2592,12 @@ async def api_guideline_stream(request: Request):
     model_name = get_requested_model_name(body)
     session_id = get_session_id(body, "guideline")
     context_mode = get_context_mode(body, MODE_GUIDELINE)
+    route_mode = str(body.get("route_mode", "") or "").strip() or None
+    route_confidence = body.get("route_confidence")
+    try:
+        route_confidence = float(route_confidence) if route_confidence is not None else None
+    except (TypeError, ValueError):
+        route_confidence = None
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     
@@ -2066,7 +2619,14 @@ async def api_guideline_stream(request: Request):
             trace_token = SEARCH_TRACE_CONTEXT.set([])
             try:
                 yield json.dumps({"type": "start"}, ensure_ascii=False) + "\n"
-                plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
+                plan, plan_metrics = await generate_execution_plan(
+                    prompt,
+                    context_mode,
+                    session_id,
+                    model_name,
+                    model_chat_client,
+                    include_metrics=True,
+                )
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
                 agent_input = await build_agent_input(
                     prompt,
@@ -2092,7 +2652,11 @@ async def api_guideline_stream(request: Request):
                 first_chunk = True
                 chunk_count = 0
                 response_parts: list[str] = []
+                last_usage: dict[str, int] | None = None
                 async for update in search_agent.run_stream(agent_input):
+                    usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+                    if usage is not None:
+                        last_usage = usage
                     if update.text:
                         if first_chunk:
                             logger.info(f"[{request_id}] {get_text('log_first_chunk', LANGUAGE, time=f'{(time.time() - stream_start)*1000:.2f}')}")
@@ -2110,8 +2674,14 @@ async def api_guideline_stream(request: Request):
                     yield json.dumps({"type": "evidence", "evidence": evidence_items}, ensure_ascii=False) + "\n"
 
                 answer_text = "".join(response_parts).strip()
+                execution_metrics = _build_usage_snapshot(
+                    prompt_input=agent_input,
+                    output_text=answer_text,
+                    raw_usage=last_usage,
+                )
+                execution_metrics["duration_ms"] = int((time.time() - stream_start) * 1000)
                 await append_session_exchange(context_mode, session_id, prompt, answer_text)
-                review = await generate_quality_review(
+                review, review_metrics = await generate_quality_review(
                     prompt,
                     context_mode,
                     answer_text,
@@ -2120,9 +2690,31 @@ async def api_guideline_stream(request: Request):
                     plan=plan,
                     traces=search_traces,
                     evidence=evidence_items,
+                    include_metrics=True,
                 )
                 if review:
                     yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=context_mode,
+                    session_id=session_id,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text=answer_text,
+                    status="completed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    planning_duration_ms=int(plan_metrics.get("duration_ms") or 0),
+                    execution_duration_ms=int(execution_metrics.get("duration_ms") or 0),
+                    review_duration_ms=int((review_metrics or {}).get("duration_ms") or 0),
+                    usage=_merge_usage_snapshots(plan_metrics, execution_metrics, review_metrics),
+                    traces=search_traces,
+                    evidence=evidence_items,
+                    review=review,
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    metadata={"kind": "stream"},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
                 total_time = time.time() - start_time
                 logger.info(f"[{request_id}] {get_text('log_completed', LANGUAGE, time=f'{total_time:.2f}', count=chunk_count)}")
                 yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
@@ -2130,6 +2722,21 @@ async def api_guideline_stream(request: Request):
             except Exception as e:
                 error_msg = get_text('error_search_processing', LANGUAGE, error=str(e))
                 logger.error(f"[{request_id}] ❌ {error_msg}")
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=context_mode,
+                    session_id=session_id,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text="",
+                    status="failed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    error_message=error_msg,
+                    metadata={"kind": "stream"},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
                 yield json.dumps({"type": "error", "message": error_msg}, ensure_ascii=False) + "\n"
             finally:
                 SEARCH_TRACE_CONTEXT.reset(trace_token)
@@ -2202,7 +2809,14 @@ async def multi_agent_stream(request: Request):
                     model_name,
                     include_history=True,
                 )
-                plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
+                plan, plan_metrics = await generate_execution_plan(
+                    prompt,
+                    context_mode,
+                    session_id,
+                    model_name,
+                    model_chat_client,
+                    include_metrics=True,
+                )
                 yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
 
                 # Use ConcurrentBuilder to create parallel workflow
@@ -2240,6 +2854,12 @@ async def multi_agent_stream(request: Request):
                                     agent_results[msg.author_name] = msg.text
 
                 agents_time = time.time() - workflow_exec_start
+                workflow_usage = _build_usage_snapshot(
+                    prompt_input=workflow_prompt,
+                    output_text="\n".join(agent_results.values()),
+                    prompt_multiplier=2.0,
+                )
+                workflow_usage["duration_ms"] = int(agents_time * 1000)
                 logger.info(f"[{request_id}] {get_text('log_parallel_execution_complete', LANGUAGE, time=f'{agents_time:.2f}', count=event_count)}")
                 yield json.dumps({"type": "agents_complete"}, ensure_ascii=False) + "\n"
 
@@ -2265,7 +2885,11 @@ Positive perspective:
 
                 synthesis_parts = []
                 synthesis_chunk_count = 0
+                synthesis_usage_raw: dict[str, int] | None = None
                 async for update in model_synthesizer_agent.run_stream(synthesis_prompt):
+                    usage = _extract_usage_from_raw(getattr(update, "raw_representation", None))
+                    if usage is not None:
+                        synthesis_usage_raw = usage
                     if update.text:
                         synthesis_chunk_count += 1
                         synthesis_parts.append(update.text)
@@ -2277,6 +2901,12 @@ Positive perspective:
                         yield json.dumps(data, ensure_ascii=False) + "\n"
 
                 synthesis_text = "".join(synthesis_parts).strip()
+                synthesis_metrics = _build_usage_snapshot(
+                    prompt_input=synthesis_prompt,
+                    output_text=synthesis_text,
+                    raw_usage=synthesis_usage_raw,
+                )
+                synthesis_metrics["duration_ms"] = int((time.time() - synthesis_start) * 1000)
                 assistant_summary = (
                     "Critical perspective:\n"
                     f"{critical_content}\n\n"
@@ -2286,16 +2916,37 @@ Positive perspective:
                     f"{synthesis_text}"
                 )
                 await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
-                review = await generate_quality_review(
+                review, review_metrics = await generate_quality_review(
                     prompt,
                     context_mode,
                     assistant_summary,
                     model_name,
                     model_chat_client,
                     plan=plan,
+                    include_metrics=True,
                 )
                 if review:
                     yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=ROUTE_MODE_MULTI_AGENT,
+                    session_id=session_id,
+                    session_mode=context_mode,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text=assistant_summary,
+                    status="completed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    planning_duration_ms=int(plan_metrics.get("duration_ms") or 0),
+                    execution_duration_ms=int((workflow_usage.get("duration_ms") or 0) + (synthesis_metrics.get("duration_ms") or 0)),
+                    review_duration_ms=int((review_metrics or {}).get("duration_ms") or 0),
+                    usage=_merge_usage_snapshots(plan_metrics, workflow_usage, synthesis_metrics, review_metrics),
+                    review=review,
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    metadata={"kind": "stream", "workflow": "multi_agent"},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
 
                 synthesis_time = time.time() - synthesis_start
                 total_time = time.time() - start_time
@@ -2305,6 +2956,22 @@ Positive perspective:
 
             except Exception as e:
                 import traceback
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=ROUTE_MODE_MULTI_AGENT,
+                    session_id=session_id,
+                    session_mode=context_mode,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text="",
+                    status="failed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    error_message=str(e),
+                    metadata={"kind": "stream", "workflow": "multi_agent"},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
                 error_data = {
                     "type": "error",
                     "message": str(e),
@@ -2327,6 +2994,12 @@ async def phase1_planning_stream(request: Request):
     tone = body.get("tone", "balanced")
     session_id = get_session_id(body, "idobata")
     context_mode = get_context_mode(body, MODE_IDOBATA)
+    route_mode = str(body.get("route_mode", "") or "").strip() or None
+    route_confidence = body.get("route_confidence")
+    try:
+        route_confidence = float(route_confidence) if route_confidence is not None else None
+    except (TypeError, ValueError):
+        route_confidence = None
 
     logger.info(f"[{request_id}] {get_text('log_model_info', LANGUAGE, model=model_name)}")
     logger.info(f"[{request_id}] {get_text('log_tone_setting', LANGUAGE, tone=tone)}")
@@ -2373,200 +3046,252 @@ async def phase1_planning_stream(request: Request):
 
         session = await session_store.get_session(context_mode, session_id)
         async with session.lock:
-            # AI Board Meeting: Create CxO agents
-            logger.info(f"[{request_id}] {get_text('log_planning_agent_creating', LANGUAGE)}")
-            ceo_agent = ChatAgent(
-                name="CEO",
-                chat_client=model_chat_client,
-                description="CEO leading the management meeting and presenting strategic direction",
-                instructions=get_text('agent_board_ceo_instructions', LANGUAGE, tone_suffix=tone_suffix),
-            )
+            try:
+                # AI Board Meeting: Create CxO agents
+                logger.info(f"[{request_id}] {get_text('log_planning_agent_creating', LANGUAGE)}")
+                ceo_agent = ChatAgent(
+                    name="CEO",
+                    chat_client=model_chat_client,
+                    description="CEO leading the management meeting and presenting strategic direction",
+                    instructions=get_text('agent_board_ceo_instructions', LANGUAGE, tone_suffix=tone_suffix),
+                )
 
-            cto_agent = ChatAgent(
-                name="CTO",
-                chat_client=model_chat_client,
-                description="Evaluates technical strategy and feasibility",
-                instructions=get_text('agent_board_cto_instructions', LANGUAGE, tone_suffix=tone_suffix),
-            )
+                cto_agent = ChatAgent(
+                    name="CTO",
+                    chat_client=model_chat_client,
+                    description="Evaluates technical strategy and feasibility",
+                    instructions=get_text('agent_board_cto_instructions', LANGUAGE, tone_suffix=tone_suffix),
+                )
 
-            cfo_agent = ChatAgent(
-                name="CFO",
-                chat_client=model_chat_client,
-                description="Evaluates financial viability and business potential",
-                instructions=get_text('agent_board_cfo_instructions', LANGUAGE, tone_suffix=tone_suffix),
-            )
+                cfo_agent = ChatAgent(
+                    name="CFO",
+                    chat_client=model_chat_client,
+                    description="Evaluates financial viability and business potential",
+                    instructions=get_text('agent_board_cfo_instructions', LANGUAGE, tone_suffix=tone_suffix),
+                )
 
-            coo_agent = ChatAgent(
-                name="COO",
-                chat_client=model_chat_client,
-                description="Integrates CxO opinions and creates execution plan",
-                instructions=get_text('agent_board_coo_instructions', LANGUAGE, tone_suffix=tone_suffix),
-            )
+                coo_agent = ChatAgent(
+                    name="COO",
+                    chat_client=model_chat_client,
+                    description="Integrates CxO opinions and creates execution plan",
+                    instructions=get_text('agent_board_coo_instructions', LANGUAGE, tone_suffix=tone_suffix),
+                )
 
-            logger.info(f"[{request_id}] {get_text('log_planning_agent_created', LANGUAGE)}")
+                logger.info(f"[{request_id}] {get_text('log_planning_agent_created', LANGUAGE)}")
 
-            # Build workflow (create new instance to reset)
-            workflow_id = f"wf_{int(time.time() * 1000)}"
-            logger.info(f"[{request_id}] {get_text('log_board_workflow_building', LANGUAGE, id=workflow_id)}")
+                # Build workflow (create new instance to reset)
+                workflow_id = f"wf_{int(time.time() * 1000)}"
+                logger.info(f"[{request_id}] {get_text('log_board_workflow_building', LANGUAGE, id=workflow_id)}")
 
-            selector_state = {
-                "calls": 0,
-                "last_returned": None,
-            }
+                selector_state = {
+                    "calls": 0,
+                    "last_returned": None,
+                }
 
-            def planning_selector(state) -> Optional[str]:
-                round_idx = getattr(state, "current_round", None)
-                if round_idx is None:
-                    round_idx = getattr(state, "round_index", 0) or 0
+                def planning_selector(state) -> Optional[str]:
+                    round_idx = getattr(state, "current_round", None)
+                    if round_idx is None:
+                        round_idx = getattr(state, "round_index", 0) or 0
 
-                history = getattr(state, "conversation", None)
-                if history is None:
-                    history = getattr(state, "history", ()) or ()
+                    history = getattr(state, "conversation", None)
+                    if history is None:
+                        history = getattr(state, "history", ()) or ()
 
-                MAX_ROUNDS = 10
-                if round_idx >= MAX_ROUNDS:
-                    logger.warning(f"[{request_id}] {get_text('warning_max_rounds', LANGUAGE, max=MAX_ROUNDS)}")
-                    return None
-
-                MAX_SELECTOR_CALLS = 50
-                if selector_state["calls"] >= MAX_SELECTOR_CALLS:
-                    logger.warning(f"[{request_id}] {get_text('warning_max_selector_calls', LANGUAGE, max=MAX_SELECTOR_CALLS)}")
-                    return None
-
-                for turn in reversed(history):
-                    text = ""
-                    if hasattr(turn, "text"):
-                        text = turn.text or ""
-                    elif hasattr(turn, "message") and hasattr(turn.message, "text"):
-                        text = turn.message.text or ""
-                    if text and "PLAN_READY:" in text:
-                        logger.info(f"[{request_id}] {get_text('log_plan_ready', LANGUAGE)}")
+                    MAX_ROUNDS = 10
+                    if round_idx >= MAX_ROUNDS:
+                        logger.warning(f"[{request_id}] {get_text('warning_max_rounds', LANGUAGE, max=MAX_ROUNDS)}")
                         return None
 
-                last_agent_speaker: Optional[str] = None
-                for turn in reversed(history):
-                    speaker = None
-                    if hasattr(turn, "author_name"):
-                        speaker = turn.author_name
-                    elif hasattr(turn, "speaker"):
-                        speaker = turn.speaker
-                    elif hasattr(turn, "message") and hasattr(turn.message, "author_name"):
-                        speaker = turn.message.author_name
-                    speaker = _pick_participant_name(speaker)
-                    if speaker:
-                        last_agent_speaker = speaker
-                        break
+                    MAX_SELECTOR_CALLS = 50
+                    if selector_state["calls"] >= MAX_SELECTOR_CALLS:
+                        logger.warning(f"[{request_id}] {get_text('warning_max_selector_calls', LANGUAGE, max=MAX_SELECTOR_CALLS)}")
+                        return None
 
-                if not last_agent_speaker:
-                    next_speaker = AGENT_SEQUENCE[0]
-                else:
-                    current_index = AGENT_SEQUENCE.index(last_agent_speaker)
-                    next_speaker = AGENT_SEQUENCE[(current_index + 1) % len(AGENT_SEQUENCE)]
+                    for turn in reversed(history):
+                        text = ""
+                        if hasattr(turn, "text"):
+                            text = turn.text or ""
+                        elif hasattr(turn, "message") and hasattr(turn.message, "text"):
+                            text = turn.message.text or ""
+                        if text and "PLAN_READY:" in text:
+                            logger.info(f"[{request_id}] {get_text('log_plan_ready', LANGUAGE)}")
+                            return None
 
-                if next_speaker == selector_state.get("last_returned"):
-                    current_index = AGENT_SEQUENCE.index(next_speaker)
-                    next_speaker = AGENT_SEQUENCE[(current_index + 1) % len(AGENT_SEQUENCE)]
+                    last_agent_speaker: Optional[str] = None
+                    for turn in reversed(history):
+                        speaker = None
+                        if hasattr(turn, "author_name"):
+                            speaker = turn.author_name
+                        elif hasattr(turn, "speaker"):
+                            speaker = turn.speaker
+                        elif hasattr(turn, "message") and hasattr(turn.message, "author_name"):
+                            speaker = turn.message.author_name
+                        speaker = _pick_participant_name(speaker)
+                        if speaker:
+                            last_agent_speaker = speaker
+                            break
 
-                selector_state["calls"] += 1
-                selector_state["last_returned"] = next_speaker
-                return next_speaker
+                    if not last_agent_speaker:
+                        next_speaker = AGENT_SEQUENCE[0]
+                    else:
+                        current_index = AGENT_SEQUENCE.index(last_agent_speaker)
+                        next_speaker = AGENT_SEQUENCE[(current_index + 1) % len(AGENT_SEQUENCE)]
 
-            planning_workflow = (
-                GroupChatBuilder()
-                .participants([
-                    ceo_agent,
-                    cto_agent,
-                    cfo_agent,
-                    coo_agent,
-                ])
-                .with_select_speaker_func(planning_selector, orchestrator_name="PlanningOrchestrator")
-                .build()
-            )
+                    if next_speaker == selector_state.get("last_returned"):
+                        current_index = AGENT_SEQUENCE.index(next_speaker)
+                        next_speaker = AGENT_SEQUENCE[(current_index + 1) % len(AGENT_SEQUENCE)]
 
-            logger.info(f"[{request_id}] {get_text('log_board_workflow_built', LANGUAGE, id=workflow_id)}")
+                    selector_state["calls"] += 1
+                    selector_state["last_returned"] = next_speaker
+                    return next_speaker
 
-            workflow_prompt = await build_agent_input(
-                prompt,
-                context_mode,
-                session_id,
-                model_name,
-                include_history=True,
-            )
-            plan = await generate_execution_plan(prompt, context_mode, session_id, model_name, model_chat_client)
-            yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
-            workflow_exec_start = time.time()
-            logger.info(f"[{request_id}] {get_text('log_board_workflow_start', LANGUAGE, length=len(prompt))}")
-            event_count = 0
-            seq = 0
-            board_notes = {
-                "CEO": [],
-                "CTO": [],
-                "CFO": [],
-                "COO": [],
-            }
+                planning_workflow = (
+                    GroupChatBuilder()
+                    .participants([
+                        ceo_agent,
+                        cto_agent,
+                        cfo_agent,
+                        coo_agent,
+                    ])
+                    .with_select_speaker_func(planning_selector, orchestrator_name="PlanningOrchestrator")
+                    .build()
+                )
 
-            async for event in planning_workflow.run_stream(workflow_prompt):
-                event_count += 1
-                if isinstance(event, AgentRunUpdateEvent):
-                    author_name = None
-                    if event.data is not None:
-                        if hasattr(event.data, "author_name") and event.data.author_name:
-                            author_name = event.data.author_name
-                        elif hasattr(event.data, "message") and hasattr(event.data.message, "author_name"):
-                            author_name = event.data.message.author_name
+                logger.info(f"[{request_id}] {get_text('log_board_workflow_built', LANGUAGE, id=workflow_id)}")
 
-                    agent_name = _pick_participant_name(author_name, event.executor_id)
-                    if not agent_name:
-                        continue
+                workflow_prompt = await build_agent_input(
+                    prompt,
+                    context_mode,
+                    session_id,
+                    model_name,
+                    include_history=True,
+                )
+                plan, plan_metrics = await generate_execution_plan(
+                    prompt,
+                    context_mode,
+                    session_id,
+                    model_name,
+                    model_chat_client,
+                    include_metrics=True,
+                )
+                yield json.dumps({"type": "plan", "plan": plan}, ensure_ascii=False) + "\n"
+                workflow_exec_start = time.time()
+                logger.info(f"[{request_id}] {get_text('log_board_workflow_start', LANGUAGE, length=len(prompt))}")
+                event_count = 0
+                seq = 0
+                board_notes = {
+                    "CEO": [],
+                    "CTO": [],
+                    "CFO": [],
+                    "COO": [],
+                }
 
-                    text = ""
-                    if event.data is not None and hasattr(event.data, "text"):
-                        text = event.data.text or ""
-                    elif event.data is not None and hasattr(event.data, "message") and hasattr(event.data.message, "text"):
-                        text = event.data.message.text or ""
-                    elif event.data is not None:
-                        text = str(event.data)
-                    if text:
-                        board_notes[agent_name].append(text)
-                        seq += 1
-                        data = {
-                            "agent": agent_name,
-                            "seq": seq,
-                            "content": text,
-                            "is_final": False,
-                            "executor_id": getattr(event, "executor_id", None),
-                            "author_name": author_name,
-                        }
-                        yield json.dumps(data, ensure_ascii=False) + "\n"
-                elif isinstance(event, WorkflowOutputEvent):
-                    pass
+                async for event in planning_workflow.run_stream(workflow_prompt):
+                    event_count += 1
+                    if isinstance(event, AgentRunUpdateEvent):
+                        author_name = None
+                        if event.data is not None:
+                            if hasattr(event.data, "author_name") and event.data.author_name:
+                                author_name = event.data.author_name
+                            elif hasattr(event.data, "message") and hasattr(event.data.message, "author_name"):
+                                author_name = event.data.message.author_name
 
-            assistant_summary = (
-                "CEO:\n"
-                f"{''.join(board_notes['CEO']).strip()}\n\n"
-                "CTO:\n"
-                f"{''.join(board_notes['CTO']).strip()}\n\n"
-                "CFO:\n"
-                f"{''.join(board_notes['CFO']).strip()}\n\n"
-                "COO:\n"
-                f"{''.join(board_notes['COO']).strip()}"
-            )
-            await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
-            review = await generate_quality_review(
-                prompt,
-                context_mode,
-                assistant_summary,
-                model_name,
-                model_chat_client,
-                plan=plan,
-            )
-            if review:
-                yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
+                        agent_name = _pick_participant_name(author_name, event.executor_id)
+                        if not agent_name:
+                            continue
 
-            total_time = time.time() - start_time
-            workflow_time = time.time() - workflow_exec_start
-            logger.info(f"[{request_id}] {get_text('log_board_complete', LANGUAGE, workflow_time=f'{workflow_time:.2f}', count=event_count, total_time=f'{total_time:.2f}')}")
-            yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
+                        text = ""
+                        if event.data is not None and hasattr(event.data, "text"):
+                            text = event.data.text or ""
+                        elif event.data is not None and hasattr(event.data, "message") and hasattr(event.data.message, "text"):
+                            text = event.data.message.text or ""
+                        elif event.data is not None:
+                            text = str(event.data)
+                        if text:
+                            board_notes[agent_name].append(text)
+                            seq += 1
+                            data = {
+                                "agent": agent_name,
+                                "seq": seq,
+                                "content": text,
+                                "is_final": False,
+                                "executor_id": getattr(event, "executor_id", None),
+                                "author_name": author_name,
+                            }
+                            yield json.dumps(data, ensure_ascii=False) + "\n"
+                    elif isinstance(event, WorkflowOutputEvent):
+                        pass
+
+                assistant_summary = (
+                    "CEO:\n"
+                    f"{''.join(board_notes['CEO']).strip()}\n\n"
+                    "CTO:\n"
+                    f"{''.join(board_notes['CTO']).strip()}\n\n"
+                    "CFO:\n"
+                    f"{''.join(board_notes['CFO']).strip()}\n\n"
+                    "COO:\n"
+                    f"{''.join(board_notes['COO']).strip()}"
+                )
+                execution_metrics = _build_usage_snapshot(
+                    prompt_input=workflow_prompt,
+                    output_text=assistant_summary,
+                    prompt_multiplier=4.0,
+                )
+                execution_metrics["duration_ms"] = int((time.time() - workflow_exec_start) * 1000)
+                await append_session_exchange(context_mode, session_id, prompt, assistant_summary)
+                review, review_metrics = await generate_quality_review(
+                    prompt,
+                    context_mode,
+                    assistant_summary,
+                    model_name,
+                    model_chat_client,
+                    plan=plan,
+                    include_metrics=True,
+                )
+                if review:
+                    yield json.dumps({"type": "review", "review": review}, ensure_ascii=False) + "\n"
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=context_mode,
+                    session_id=session_id,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text=assistant_summary,
+                    status="completed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    planning_duration_ms=int(plan_metrics.get("duration_ms") or 0),
+                    execution_duration_ms=int(execution_metrics.get("duration_ms") or 0),
+                    review_duration_ms=int((review_metrics or {}).get("duration_ms") or 0),
+                    usage=_merge_usage_snapshots(plan_metrics, execution_metrics, review_metrics),
+                    review=review,
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    metadata={"kind": "stream", "workflow": "board", "tone": tone},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
+
+                total_time = time.time() - start_time
+                workflow_time = time.time() - workflow_exec_start
+                logger.info(f"[{request_id}] {get_text('log_board_complete', LANGUAGE, workflow_time=f'{workflow_time:.2f}', count=event_count, total_time=f'{total_time:.2f}')}")
+                yield json.dumps({"type": "complete"}, ensure_ascii=False) + "\n"
+            except Exception as e:
+                logger.exception("[%s] Board meeting stream failed", request_id)
+                audit_payload = await _record_audit_event(
+                    request_id=request_id,
+                    mode=context_mode,
+                    session_id=session_id,
+                    model_name=model_name,
+                    prompt=prompt,
+                    response_text="",
+                    status="failed",
+                    duration_ms=int((time.time() - start_time) * 1000),
+                    route_mode=route_mode,
+                    route_confidence=route_confidence,
+                    error_message=str(e),
+                    metadata={"kind": "stream", "workflow": "board", "tone": tone},
+                )
+                yield json.dumps({"type": "audit", "audit": audit_payload}, ensure_ascii=False) + "\n"
+                yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
 
     return StreamingResponse(generator(), media_type="application/x-ndjson")
 
@@ -2647,6 +3372,24 @@ async def create_job(request: Request):
     task = asyncio.create_task(_run_background_job(job_id, mode, session_id, model_name, prompt, tone))
     JOB_TASKS[job_id] = task
     return _serialize_job(job, include_result=True)
+
+
+@app.get("/api/audit/events")
+async def list_audit_events(session_id: str | None = None, mode: str | None = None, limit: int = 20):
+    events = await audit_store.list_events(
+        session_id=session_id or None,
+        mode=(mode or None),
+        limit=max(1, min(limit, 100)),
+    )
+    return {"events": [asdict(event) for event in events]}
+
+
+@app.get("/api/audit/summary")
+async def get_audit_summary(session_id: str | None = None, mode: str | None = None):
+    return await audit_store.summarize(
+        session_id=session_id or None,
+        mode=(mode or None),
+    )
 
 
 @app.get("/api/files")

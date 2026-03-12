@@ -25,6 +25,7 @@
 - **Agent Routing**: 通常チャット画面から Auto Route を実行すると、`通常チャット / RAG検索 / マルチエージェント分析 / AI役員会議` を自動選択
 - **Quality Review**: 各モードの回答後に evaluator agent が `score / strengths / risks / missing info / next step` を返し、回答品質を可視化
 - **Mission Queue**: 各モードのプロンプトを非同期ジョブとして投入し、右側の Mission Queue で進捗と結果を追跡
+- **Ops Ledger**: 左側レールで実行回数・トークン量・推定コストを集計し、各回答には監査ログを添付表示
 
 
 ### マルチエージェント分析（ConcurrentBuilder）
@@ -168,6 +169,8 @@ provider ごとの必須項目:
 - `ROUTE_TIMEOUT_SECONDS` は Auto Route 用の router 判定に使う上限秒数です。タイムアウト時はヒューリスティック判定へフォールバックします。
 - `ENABLE_EVALUATION_AGENT` と `EVALUATION_TIMEOUT_SECONDS` で回答後の quality review 実行有無と上限秒数を制御できます。
 - `BACKEND_JOB_STORE_PATH` で非同期ジョブの JSON 永続化先を変更できます。
+- `BACKEND_AUDIT_STORE_PATH` で監査ログの JSON 永続化先を変更できます。
+- `INPUT_COST_PER_1K_TOKENS` / `OUTPUT_COST_PER_1K_TOKENS` / `CURRENCY` をモデルごとに設定すると、Ops Ledger で推定コストを集計できます。
 
 （任意）Azure AI Searchを使う場合（RAG検索）:
 

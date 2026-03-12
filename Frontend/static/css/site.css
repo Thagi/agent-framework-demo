@@ -2028,6 +2028,39 @@ body::after {
     font-size: 0.92rem;
 }
 
+.audit-feed {
+    margin-top: 0.9rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
+.audit-empty {
+    margin-top: 0.9rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+}
+
+.audit-feed-item {
+    padding: 0.8rem 0.9rem;
+    border-radius: 14px;
+    border: 1px solid rgba(94, 234, 212, 0.08);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.audit-feed-header {
+    color: #eefcf8;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.audit-feed-meta,
+.audit-feed-excerpt {
+    margin-top: 0.25rem;
+    color: var(--muted);
+    font-size: 0.74rem;
+}
+
 .conversation-hangar {
     min-width: 0;
     min-height: 0;
@@ -2182,6 +2215,7 @@ body::after {
 .execution-plan-panel,
 .route-info-panel,
 .review-panel,
+.audit-panel,
 .approval-dialog,
 .agent-panel,
 .synthesis-panel {
@@ -2207,7 +2241,8 @@ body::after {
 .synthesis-title,
 .diagnostics-title,
 .execution-plan-title,
-.review-title {
+.review-title,
+.audit-header {
     color: #f8fffe;
 }
 
@@ -2217,10 +2252,42 @@ body::after {
 .diagnostics-item-line,
 .execution-plan-section-body,
 .review-section-body,
+.audit-primary,
+.audit-meta,
+.audit-details,
 .approval-dialog-header p,
 .attachment-chip-meta,
 .attachment-chip-preview {
     color: var(--text);
+}
+
+.audit-panel {
+    display: none;
+    margin-top: 14px;
+    padding: 14px 16px;
+    border-radius: 18px;
+}
+
+.audit-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 8px;
+}
+
+.audit-meta {
+    margin-top: 6px;
+    color: rgba(181, 235, 244, 0.74);
+    font-size: 0.78rem;
+}
+
+.audit-details {
+    margin-top: 8px;
+    font-size: 0.78rem;
+    line-height: 1.6;
 }
 
 .mission-rail-header {

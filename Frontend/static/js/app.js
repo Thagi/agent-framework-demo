@@ -12,10 +12,13 @@ let attachmentsGuideline = [];
 let attachmentsIdobata = [];
 let missionJobs = [];
 let selectedJobId = null;
+let auditSummary = null;
+let auditEvents = [];
 const sessionId = 'default';
 const sessionIdGuideline = 'guideline';
 const sessionIdIdobata = 'idobata';
 const JOB_POLL_INTERVAL_MS = 5000;
+const AUDIT_POLL_INTERVAL_MS = 10000;
 
 // DOM elements - general chat
 const chatMessages = document.getElementById('chatMessages');
@@ -83,6 +86,11 @@ const missionList = document.getElementById('missionList');
 const missionEmpty = document.getElementById('missionEmpty');
 const missionDetail = document.getElementById('missionDetail');
 const refreshJobsButton = document.getElementById('refreshJobsButton');
+const auditTotalRunsValue = document.getElementById('auditTotalRunsValue');
+const auditTotalTokensValue = document.getElementById('auditTotalTokensValue');
+const auditTotalCostValue = document.getElementById('auditTotalCostValue');
+const auditEventList = document.getElementById('auditEventList');
+const auditEventEmpty = document.getElementById('auditEventEmpty');
 let approvalResolver = null;
 
 const attachmentContexts = {
@@ -395,6 +403,8 @@ window.renderDynamicUi = () => {
     renderMissionList();
     const activeJob = selectedJobId ? missionJobs.find(job => job.job_id === selectedJobId) || null : null;
     renderMissionDetail(activeJob);
+    renderAuditSummary();
+    renderAuditEventFeed();
 };
 
 function setStreamingUi(busy) {
@@ -529,7 +539,10 @@ if (settingsButtonIdobata) {
     settingsButtonIdobata.addEventListener('click', () => toggleSettings('idobataChat'));
 }
 if (refreshJobsButton) {
-    refreshJobsButton.addEventListener('click', () => refreshJobs(false));
+    refreshJobsButton.addEventListener('click', () => {
+        refreshJobs(false);
+        refreshAuditDashboard();
+    });
 }
 
 // Initialization
@@ -799,6 +812,7 @@ function normalizeStoredMessage(message) {
         timestamp: message.timestamp ? new Date(message.timestamp) : new Date(),
         plan: message.plan || null,
         review: normalizeReviewData(message.review),
+        audit: normalizeAuditData(message.audit),
         traces: Array.isArray(message.traces) ? message.traces : [],
         evidence: Array.isArray(message.evidence) ? message.evidence : [],
         route_mode: typeof message.route_mode === 'string' ? message.route_mode : null,
@@ -875,9 +889,13 @@ async function initializeApp() {
     await initializeHistories();
     await initializeAttachments();
     await refreshJobs(false);
+    await refreshAuditDashboard();
     window.setInterval(() => {
         refreshJobs();
     }, JOB_POLL_INTERVAL_MS);
+    window.setInterval(() => {
+        refreshAuditDashboard();
+    }, AUDIT_POLL_INTERVAL_MS);
 }
 
 function normalizeJob(job) {
@@ -1121,6 +1139,22 @@ function renderMissionDetail(job) {
             missionDetail.appendChild(createMissionList(normalizedReview.missing_info, t('review_missing_info')));
             missionDetail.appendChild(createMissionSection(t('review_next_step'), normalizedReview.recommended_next_step));
         }
+
+        const normalizedAudit = normalizeAuditData(result.audit);
+        if (normalizedAudit) {
+            const auditLines = [
+                `- ${t('audit_duration_label')}: ${normalizedAudit.duration_ms ?? '-'}`,
+                `- ${t('audit_total_tokens_label')}: ${normalizedAudit.total_tokens ?? '-'}`,
+                `- ${t('audit_prompt_tokens_label')}: ${normalizedAudit.prompt_tokens ?? '-'}`,
+                `- ${t('audit_completion_tokens_label')}: ${normalizedAudit.completion_tokens ?? '-'}`,
+                `- ${t('audit_token_source_label')}: ${t(`audit_token_source_${normalizedAudit.token_source}`)}`,
+                `- ${t('audit_total_cost_label')}: ${formatAuditCost(normalizedAudit)}`,
+            ];
+            if (normalizedAudit.tool_names.length) {
+                auditLines.push(`- ${t('audit_tools_label')}: ${normalizedAudit.tool_names.join(', ')}`);
+            }
+            missionDetail.appendChild(createMissionSection(t('audit_panel_title'), auditLines.join('\n'), { markdown: true }));
+        }
     }
 }
 
@@ -1170,6 +1204,95 @@ async function refreshJobs(preserveSelection = true) {
     } catch (error) {
         console.error('Job refresh error:', error);
     }
+}
+
+function formatCompactNumber(value) {
+    return new Intl.NumberFormat('ja-JP').format(Number(value) || 0);
+}
+
+function renderAuditSummary() {
+    if (auditTotalRunsValue) {
+        auditTotalRunsValue.textContent = auditSummary ? formatCompactNumber(auditSummary.total_runs) : '0';
+    }
+    if (auditTotalTokensValue) {
+        auditTotalTokensValue.textContent = auditSummary ? formatCompactNumber(auditSummary.total_tokens) : '0';
+    }
+    if (auditTotalCostValue) {
+        if (auditSummary && auditSummary.currency && Number.isFinite(Number(auditSummary.total_estimated_cost))) {
+            auditTotalCostValue.textContent = `${Number(auditSummary.total_estimated_cost).toFixed(4)} ${auditSummary.currency || 'USD'}`;
+        } else {
+            auditTotalCostValue.textContent = '-';
+        }
+    }
+}
+
+function renderAuditEventFeed() {
+    if (!auditEventList || !auditEventEmpty) return;
+    auditEventList.innerHTML = '';
+
+    const normalizedEvents = Array.isArray(auditEvents)
+        ? auditEvents.map(normalizeAuditData).filter(Boolean)
+        : [];
+
+    auditEventEmpty.style.display = normalizedEvents.length ? 'none' : 'block';
+    if (!normalizedEvents.length) {
+        return;
+    }
+
+    normalizedEvents.forEach(event => {
+        const item = document.createElement('div');
+        item.className = 'audit-feed-item';
+
+        const header = document.createElement('div');
+        header.className = 'audit-feed-header';
+        header.textContent = `${getRouteModeLabel(event.mode || 'general')} / ${event.model_name || '-'}`;
+
+        const meta = document.createElement('div');
+        meta.className = 'audit-feed-meta';
+        const metaParts = [];
+        if (event.duration_ms !== null) metaParts.push(`${event.duration_ms}ms`);
+        if (event.total_tokens !== null) metaParts.push(`${event.total_tokens} tok`);
+        if (Number.isFinite(event.estimated_cost)) metaParts.push(formatAuditCost(event));
+        meta.textContent = metaParts.join(' / ');
+
+        const excerpt = document.createElement('div');
+        excerpt.className = 'audit-feed-excerpt';
+        excerpt.textContent = event.error_message || event.request_id || '-';
+
+        item.appendChild(header);
+        item.appendChild(meta);
+        item.appendChild(excerpt);
+        auditEventList.appendChild(item);
+    });
+}
+
+async function refreshAuditDashboard() {
+    try {
+        const [summaryResponse, eventsResponse] = await Promise.all([
+            fetch('/api/audit/summary'),
+            fetch('/api/audit/events?limit=6'),
+        ]);
+
+        const summaryPayload = await summaryResponse.json();
+        const eventsPayload = await eventsResponse.json();
+
+        if (!summaryResponse.ok) {
+            throw new Error(summaryPayload.error || `HTTP ${summaryResponse.status}`);
+        }
+        if (!eventsResponse.ok) {
+            throw new Error(eventsPayload.error || `HTTP ${eventsResponse.status}`);
+        }
+
+        auditSummary = summaryPayload && typeof summaryPayload === 'object' ? summaryPayload : null;
+        auditEvents = Array.isArray(eventsPayload.events) ? eventsPayload.events : [];
+    } catch (error) {
+        console.error('Audit dashboard refresh error:', error);
+        auditSummary = null;
+        auditEvents = [];
+    }
+
+    renderAuditSummary();
+    renderAuditEventFeed();
 }
 
 async function selectJob(jobId) {
@@ -1321,6 +1444,7 @@ function addAiMessage(isMultiAgentMode = false) {
         content: '',
         plan: null,
         review: null,
+        audit: null,
         traces: [],
         evidence: [],
         timestamp: timestamp,
@@ -1355,6 +1479,7 @@ function addAiMessageForRoute(route) {
             timestamp,
             plan: null,
             review: null,
+            audit: null,
             is_streaming: true,
             is_multi_agent: true,
             critical_content: '',
@@ -1373,6 +1498,7 @@ function addAiMessageForRoute(route) {
             timestamp,
             plan: null,
             review: null,
+            audit: null,
             planning_content: '',
             tech_content: '',
             business_content: '',
@@ -1386,6 +1512,7 @@ function addAiMessageForRoute(route) {
             content: '',
             plan: null,
             review: null,
+            audit: null,
             traces: [],
             evidence: [],
             timestamp,
@@ -1416,6 +1543,7 @@ function addAiMessageIdobata() {
         timestamp: timestamp,
         plan: null,
         review: null,
+        audit: null,
         planning_content: '',
         tech_content: '',
         business_content: '',
@@ -1721,6 +1849,170 @@ function updateMessageReview(message, review = message.review) {
     }
 }
 
+function normalizeAuditData(audit) {
+    if (!audit || typeof audit !== 'object') {
+        return null;
+    }
+
+    const toInt = value => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? Math.max(0, Math.round(numeric)) : null;
+    };
+    const toFloat = value => {
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+    };
+    const toolNames = Array.isArray(audit.tool_names)
+        ? audit.tool_names.map(item => typeof item === 'string' ? item.trim() : '').filter(Boolean)
+        : [];
+
+    const normalized = {
+        request_id: typeof audit.request_id === 'string' ? audit.request_id : '',
+        mode: typeof audit.mode === 'string' ? audit.mode : '',
+        model_name: typeof audit.model_name === 'string' ? audit.model_name : '',
+        provider: typeof audit.provider === 'string' ? audit.provider : '',
+        target: typeof audit.target === 'string' ? audit.target : '',
+        status: typeof audit.status === 'string' ? audit.status : 'completed',
+        duration_ms: toInt(audit.duration_ms),
+        planning_duration_ms: toInt(audit.planning_duration_ms),
+        execution_duration_ms: toInt(audit.execution_duration_ms),
+        review_duration_ms: toInt(audit.review_duration_ms),
+        prompt_tokens: toInt(audit.prompt_tokens),
+        completion_tokens: toInt(audit.completion_tokens),
+        total_tokens: toInt(audit.total_tokens),
+        token_source: typeof audit.token_source === 'string' ? audit.token_source : 'unknown',
+        estimated_cost: toFloat(audit.estimated_cost),
+        currency: typeof audit.currency === 'string' ? audit.currency : '',
+        tool_names: toolNames,
+        trace_count: toInt(audit.trace_count) || 0,
+        evidence_count: toInt(audit.evidence_count) || 0,
+        attachment_count: toInt(audit.attachment_count) || 0,
+        history_message_count: toInt(audit.history_message_count) || 0,
+        review_score: toInt(audit.review_score),
+        created_at: typeof audit.created_at === 'string' ? audit.created_at : '',
+        error_message: typeof audit.error_message === 'string' ? audit.error_message.trim() : '',
+    };
+
+    if (!normalized.request_id && !normalized.model_name && normalized.total_tokens === null && normalized.duration_ms === null) {
+        return null;
+    }
+    return normalized;
+}
+
+function formatAuditCost(audit) {
+    if (!audit || !Number.isFinite(audit.estimated_cost)) {
+        return '-';
+    }
+    const currency = audit.currency || 'USD';
+    return `${audit.estimated_cost.toFixed(4)} ${currency}`;
+}
+
+function createAuditPanel() {
+    const panel = document.createElement('div');
+    panel.className = 'audit-panel';
+    panel.style.display = 'none';
+
+    const header = document.createElement('div');
+    header.className = 'audit-header';
+    header.innerHTML = `<span>🛰️</span><span>${t('audit_panel_title')}</span>`;
+
+    const primary = document.createElement('div');
+    primary.className = 'audit-primary';
+
+    const meta = document.createElement('div');
+    meta.className = 'audit-meta';
+
+    const details = document.createElement('div');
+    details.className = 'audit-details';
+
+    panel.appendChild(header);
+    panel.appendChild(primary);
+    panel.appendChild(meta);
+    panel.appendChild(details);
+
+    return { panel, primary, meta, details };
+}
+
+function applyAuditPanel(auditRefs, audit) {
+    if (!auditRefs || !auditRefs.panel) {
+        return null;
+    }
+
+    const normalized = normalizeAuditData(audit);
+    if (!normalized) {
+        auditRefs.panel.style.display = 'none';
+        return null;
+    }
+
+    const primaryParts = [];
+    if (normalized.duration_ms !== null) {
+        primaryParts.push(`${t('audit_duration_label')}: ${normalized.duration_ms}ms`);
+    }
+    if (normalized.total_tokens !== null) {
+        primaryParts.push(`${t('audit_total_tokens_label')}: ${normalized.total_tokens}`);
+    }
+    if (normalized.review_score !== null) {
+        primaryParts.push(`${t('mission_score_label')}: ${normalized.review_score}/5`);
+    }
+    if (Number.isFinite(normalized.estimated_cost)) {
+        primaryParts.push(`${t('audit_total_cost_label')}: ${formatAuditCost(normalized)}`);
+    }
+    auditRefs.primary.textContent = primaryParts.join(' / ') || '-';
+
+    const metaParts = [];
+    if (normalized.model_name) {
+        metaParts.push(`${t('mission_model_label')}: ${normalized.model_name}`);
+    }
+    if (normalized.provider) {
+        metaParts.push(normalized.provider);
+    }
+    if (normalized.token_source) {
+        metaParts.push(`${t('audit_token_source_label')}: ${t(`audit_token_source_${normalized.token_source}`)}`);
+    }
+    auditRefs.meta.textContent = metaParts.join(' / ');
+
+    const detailParts = [];
+    if (normalized.prompt_tokens !== null) {
+        detailParts.push(`${t('audit_prompt_tokens_label')}: ${normalized.prompt_tokens}`);
+    }
+    if (normalized.completion_tokens !== null) {
+        detailParts.push(`${t('audit_completion_tokens_label')}: ${normalized.completion_tokens}`);
+    }
+    if (normalized.tool_names.length) {
+        detailParts.push(`${t('audit_tools_label')}: ${normalized.tool_names.join(', ')}`);
+    }
+    if (normalized.trace_count) {
+        detailParts.push(`${t('trace_title')}: ${normalized.trace_count}`);
+    }
+    if (normalized.evidence_count) {
+        detailParts.push(`${t('evidence_title')}: ${normalized.evidence_count}`);
+    }
+    if (normalized.attachment_count) {
+        detailParts.push(`${t('audit_attachments_label')}: ${normalized.attachment_count}`);
+    }
+    if (normalized.history_message_count) {
+        detailParts.push(`${t('audit_history_label')}: ${normalized.history_message_count}`);
+    }
+    if (normalized.error_message) {
+        detailParts.push(`${t('mission_error_label')}: ${normalized.error_message}`);
+    }
+    auditRefs.details.textContent = detailParts.join(' / ');
+    auditRefs.panel.style.display = 'block';
+    return normalized;
+}
+
+function updateMessageAudit(message, audit = message.audit) {
+    if (!message || message.is_user) {
+        return;
+    }
+
+    const auditRefs = message.element && message.element.audit ? message.element.audit : null;
+    const normalized = applyAuditPanel(auditRefs, audit);
+    if (normalized) {
+        message.audit = normalized;
+    }
+}
+
 function normalizeTraceItems(traces) {
     if (!Array.isArray(traces)) {
         return [];
@@ -1977,11 +2269,13 @@ function renderNormalMessage(message) {
     let routeInfoRefs = null;
     let reviewRefs = null;
     let diagnosticsRefs = null;
+    let auditRefs = null;
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
         routeInfoRefs = createRouteInfoPanel(message);
         reviewRefs = createReviewPanel();
         diagnosticsRefs = createDiagnosticsPanel();
+        auditRefs = createAuditPanel();
     }
     
     // User messages are plain text; AI messages are rendered as Markdown
@@ -2009,6 +2303,9 @@ function renderNormalMessage(message) {
     if (reviewRefs) {
         contentDiv.appendChild(reviewRefs.panel);
     }
+    if (auditRefs) {
+        contentDiv.appendChild(auditRefs.panel);
+    }
     if (diagnosticsRefs) {
         contentDiv.appendChild(diagnosticsRefs.panel);
     }
@@ -2017,13 +2314,14 @@ function renderNormalMessage(message) {
     wrapper.appendChild(messageDiv);
     chatMessages.appendChild(wrapper);
     
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, routeInfo: routeInfoRefs, review: reviewRefs, diagnostics: diagnosticsRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, routeInfo: routeInfoRefs, review: reviewRefs, audit: auditRefs, diagnostics: diagnosticsRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
     }
     if (!message.is_user) {
         updateRouteInfoPanel(message);
         updateMessageReview(message);
+        updateMessageAudit(message);
         if (message.traces?.length || message.evidence?.length) {
             updateGuidelineDiagnostics(message);
         }
@@ -2048,6 +2346,7 @@ function renderMultiAgentMessage(message) {
     const planRefs = createExecutionPlanPanel();
     const routeInfoRefs = createRouteInfoPanel(message);
     const reviewRefs = createReviewPanel();
+    const auditRefs = createAuditPanel();
     
     const grid = document.createElement('div');
     grid.className = 'agents-grid';
@@ -2097,6 +2396,7 @@ function renderMultiAgentMessage(message) {
     container.appendChild(grid);
     container.appendChild(synthesisPanel);
     container.appendChild(reviewRefs.panel);
+    container.appendChild(auditRefs.panel);
     wrapper.appendChild(container);
     chatMessages.appendChild(wrapper);
     
@@ -2104,6 +2404,7 @@ function renderMultiAgentMessage(message) {
         plan: planRefs,
         routeInfo: routeInfoRefs,
         review: reviewRefs,
+        audit: auditRefs,
         critical: criticalPanel.querySelector('[data-agent="critical"]'),
         positive: positivePanel.querySelector('[data-agent="positive"]'),
         synthesis: synthesisPanel.querySelector('[data-agent="synthesis"]'),
@@ -2114,6 +2415,7 @@ function renderMultiAgentMessage(message) {
     }
     updateRouteInfoPanel(message);
     updateMessageReview(message);
+    updateMessageAudit(message);
 }
 
 function renderNormalMessageIdobata(message) {
@@ -2141,10 +2443,12 @@ function renderNormalMessageIdobata(message) {
     textDiv.className = 'message-text';
     let planRefs = null;
     let reviewRefs = null;
+    let auditRefs = null;
 
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
         reviewRefs = createReviewPanel();
+        auditRefs = createAuditPanel();
     }
 
     if (message.is_user) {
@@ -2168,17 +2472,21 @@ function renderNormalMessageIdobata(message) {
     if (reviewRefs) {
         contentDiv.appendChild(reviewRefs.panel);
     }
+    if (auditRefs) {
+        contentDiv.appendChild(auditRefs.panel);
+    }
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentDiv);
     wrapper.appendChild(messageDiv);
     chatMessagesIdobata.appendChild(wrapper);
 
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, review: reviewRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, review: reviewRefs, audit: auditRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
     }
     if (!message.is_user) {
         updateMessageReview(message);
+        updateMessageAudit(message);
     }
 }
 
@@ -2200,6 +2508,7 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
     const planRefs = createExecutionPlanPanel();
     const routeInfoRefs = createRouteInfoPanel(message);
     const reviewRefs = createReviewPanel();
+    const auditRefs = createAuditPanel();
 
     const grid = document.createElement('div');
     grid.className = 'agents-grid planning-grid';
@@ -2256,6 +2565,7 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
     panelContainer.appendChild(planRefs.panel);
     panelContainer.appendChild(grid);
     panelContainer.appendChild(reviewRefs.panel);
+    panelContainer.appendChild(auditRefs.panel);
     wrapper.appendChild(panelContainer);
     targetContainer.appendChild(wrapper);
 
@@ -2263,6 +2573,7 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
         plan: planRefs,
         routeInfo: routeInfoRefs,
         review: reviewRefs,
+        audit: auditRefs,
         planning: planningPanel.querySelector('[data-agent="planning"]'),
         tech: techPanel.querySelector('[data-agent="tech"]'),
         business: businessPanel.querySelector('[data-agent="business"]'),
@@ -2273,6 +2584,7 @@ function renderPlanningMessageInContainer(message, targetContainer, title) {
     }
     updateRouteInfoPanel(message);
     updateMessageReview(message);
+    updateMessageAudit(message);
 }
 
 function renderPlanningMessage(message) {
@@ -2641,6 +2953,10 @@ async function streamNormalChat(prompt, aiMessage, options = {}) {
         } else if (data.type === 'review' && data.review) {
             updateMessageReview(aiMessage, data.review);
             scrollFn();
+        } else if (data.type === 'audit' && data.audit) {
+            updateMessageAudit(aiMessage, data.audit);
+            refreshAuditDashboard();
+            scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);
         }
@@ -2700,6 +3016,10 @@ async function streamMultiAgentChat(prompt, aiMessage, options = {}) {
             scrollFn();
         } else if (data.type === 'review' && data.review) {
             updateMessageReview(aiMessage, data.review);
+            scrollFn();
+        } else if (data.type === 'audit' && data.audit) {
+            updateMessageAudit(aiMessage, data.audit);
+            refreshAuditDashboard();
             scrollFn();
         } else if (data.type === 'synthesis_start') {
             aiMessage.synthesis_streaming = true;
@@ -2795,6 +3115,10 @@ async function streamIdobataChat(prompt, aiMessage, options = {}) {
             scrollFn();
         } else if (data.type === 'review' && data.review) {
             updateMessageReview(aiMessage, data.review);
+            scrollFn();
+        } else if (data.type === 'audit' && data.audit) {
+            updateMessageAudit(aiMessage, data.audit);
+            refreshAuditDashboard();
             scrollFn();
         } else if (data.agent && data.content) {
             updatePlanningContent(aiMessage, data.agent, data.content);
@@ -2951,6 +3275,7 @@ function addAiMessageGuideline() {
         content: '',
         plan: null,
         review: null,
+        audit: null,
         traces: [],
         evidence: [],
         timestamp: timestamp,
@@ -2989,11 +3314,13 @@ function renderMessageGuideline(message) {
     let planRefs = null;
     let reviewRefs = null;
     let diagnosticsRefs = null;
+    let auditRefs = null;
 
     if (!message.is_user) {
         planRefs = createExecutionPlanPanel();
         reviewRefs = createReviewPanel();
         diagnosticsRefs = createDiagnosticsPanel();
+        auditRefs = createAuditPanel();
     }
     
     if (message.is_user) {
@@ -3017,6 +3344,9 @@ function renderMessageGuideline(message) {
     if (reviewRefs) {
         contentDiv.appendChild(reviewRefs.panel);
     }
+    if (auditRefs) {
+        contentDiv.appendChild(auditRefs.panel);
+    }
     if (diagnosticsRefs) {
         contentDiv.appendChild(diagnosticsRefs.panel);
     }
@@ -3025,12 +3355,13 @@ function renderMessageGuideline(message) {
     wrapper.appendChild(messageDiv);
     chatMessagesGuideline.appendChild(wrapper);
     
-    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, review: reviewRefs, diagnostics: diagnosticsRefs };
+    message.element = message.is_user ? textDiv : { text: textDiv, plan: planRefs, review: reviewRefs, audit: auditRefs, diagnostics: diagnosticsRefs };
     if (!message.is_user && message.plan) {
         updateMessagePlan(message, message.plan);
     }
     if (!message.is_user) {
         updateMessageReview(message);
+        updateMessageAudit(message);
         if (message.traces.length || message.evidence.length) {
             updateGuidelineDiagnostics(message);
         }
@@ -3156,6 +3487,10 @@ async function streamGuidelineChat(prompt, aiMessage, options = {}) {
             scrollFn();
         } else if (data.type === 'review' && data.review) {
             updateMessageReview(aiMessage, data.review);
+            scrollFn();
+        } else if (data.type === 'audit' && data.audit) {
+            updateMessageAudit(aiMessage, data.audit);
+            refreshAuditDashboard();
             scrollFn();
         } else if (data.type === 'error' && data.message) {
             throw new Error(data.message);

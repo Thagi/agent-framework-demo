@@ -90,6 +90,11 @@ def _extract_route_metadata(data: dict) -> dict:
     }
 
 
+def _extract_audit_metadata(data: dict) -> dict | None:
+    audit = data.get('audit')
+    return audit if isinstance(audit, dict) else None
+
+
 FRONT_TEXT = {
     "ja": {
         "log_front_request_received": "📨 フロントエンド: リクエスト受信 (model={model})",
@@ -168,6 +173,49 @@ def get_models():
     except Exception as exc:
         logger.error("Failed to fetch backend model list: %s", exc)
         return jsonify({"default_model": None, "models": [], "error": str(exc)}), 502
+
+
+@app.route('/api/audit/summary', methods=['GET'])
+def get_audit_summary():
+    params = {}
+    session_id = request.args.get('session_id')
+    mode = request.args.get('mode')
+    if session_id:
+        params['session_id'] = session_id
+    if mode:
+        params['mode'] = mode
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(f"{app.config['BACKEND_URL']}/api/audit/summary", params=params)
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.error("Failed to fetch audit summary: %s", exc)
+        return jsonify({"error": str(exc)}), 502
+
+
+@app.route('/api/audit/events', methods=['GET'])
+def get_audit_events():
+    params = {}
+    session_id = request.args.get('session_id')
+    mode = request.args.get('mode')
+    limit = request.args.get('limit')
+    if session_id:
+        params['session_id'] = session_id
+    if mode:
+        params['mode'] = mode
+    if limit:
+        params['limit'] = limit
+
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(f"{app.config['BACKEND_URL']}/api/audit/events", params=params)
+            response.raise_for_status()
+            return jsonify(response.json())
+    except Exception as exc:
+        logger.error("Failed to fetch audit events: %s", exc)
+        return jsonify({"events": [], "error": str(exc)}), 502
 
 
 @app.route('/api/files', methods=['GET'])
@@ -297,6 +345,7 @@ def chat_stream():
         ai_content = ""
         plan_payload = None
         review_payload = None
+        audit_payload = None
         try:
             backend_request_start = time.time()
             logger.info(f"[{request_id}] {front_text('log_front_send_backend', model=model)}")
@@ -309,6 +358,8 @@ def chat_stream():
                         'model': model,
                         'session_id': session_id,
                         'context_mode': context_mode,
+                        'route_mode': route_metadata.get('route_mode'),
+                        'route_confidence': route_metadata.get('route_confidence'),
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -335,6 +386,8 @@ def chat_stream():
                             ai_content += payload['content']
                         elif payload.get('type') == 'review' and payload.get('review'):
                             review_payload = payload.get('review')
+                        elif payload.get('type') == 'audit':
+                            audit_payload = _extract_audit_metadata(payload)
             
             total_time = time.time() - start_time
             logger.info(
@@ -347,6 +400,7 @@ def chat_stream():
                 'content': ai_content,
                 'plan': plan_payload,
                 'review': review_payload,
+                'audit': audit_payload,
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
@@ -362,6 +416,7 @@ def chat_stream():
                 'content': ai_content + front_text('error_block', error=str(e)),
                 'plan': plan_payload,
                 'review': review_payload,
+                'audit': audit_payload,
                 'timestamp': datetime.now().isoformat(),
                 'is_streaming': False
             }
@@ -402,6 +457,7 @@ def guideline_stream():
         trace_payloads = []
         evidence_payload = []
         review_payload = None
+        audit_payload = None
         try:
             with httpx.Client(timeout=STREAMING_PROXY_TIMEOUT) as client:
                 with client.stream(
@@ -412,6 +468,8 @@ def guideline_stream():
                         'model': model,
                         'session_id': session_id,
                         'context_mode': context_mode,
+                        'route_mode': route_metadata.get('route_mode'),
+                        'route_confidence': route_metadata.get('route_confidence'),
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -434,6 +492,8 @@ def guideline_stream():
                             evidence_payload = payload.get('evidence')
                         elif payload.get('type') == 'review' and payload.get('review'):
                             review_payload = payload.get('review')
+                        elif payload.get('type') == 'audit':
+                            audit_payload = _extract_audit_metadata(payload)
 
             _append_message(
                 session_id,
@@ -444,6 +504,7 @@ def guideline_stream():
                     'traces': trace_payloads,
                     'evidence': evidence_payload,
                     'review': review_payload,
+                    'audit': audit_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 } | route_metadata
@@ -460,6 +521,7 @@ def guideline_stream():
                     'traces': trace_payloads,
                     'evidence': evidence_payload,
                     'review': review_payload,
+                    'audit': audit_payload,
                     'timestamp': datetime.now().isoformat(),
                     'is_streaming': False
                 } | route_metadata
@@ -503,6 +565,7 @@ def multi_agent_stream():
             'timestamp': datetime.now().isoformat(),
             'plan': None,
             'review': None,
+            'audit': None,
             'critical_content': '',
             'positive_content': '',
             'synthesis_content': ''
@@ -522,6 +585,8 @@ def multi_agent_stream():
                         'model': model,
                         'session_id': session_id,
                         'context_mode': context_mode,
+                        'route_mode': route_metadata.get('route_mode'),
+                        'route_confidence': route_metadata.get('route_confidence'),
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -543,6 +608,8 @@ def multi_agent_stream():
                                     ai_message['plan'] = data.get('plan')
                                 elif data.get('type') == 'review':
                                     ai_message['review'] = data.get('review')
+                                elif data.get('type') == 'audit':
+                                    ai_message['audit'] = _extract_audit_metadata(data)
                                 if 'agent' in data and 'content' in data:
                                     agent = data['agent']
                                     content = data['content']
@@ -612,6 +679,7 @@ def idobata_stream():
             'timestamp': datetime.now().isoformat(),
             'plan': None,
             'review': None,
+            'audit': None,
             'planning_content': '',
             'tech_content': '',
             'business_content': '',
@@ -635,6 +703,8 @@ def idobata_stream():
                         'tone': tone,
                         'session_id': session_id,
                         'context_mode': context_mode,
+                        'route_mode': route_metadata.get('route_mode'),
+                        'route_confidence': route_metadata.get('route_confidence'),
                     }.items() if v is not None}
                 ) as response:
                     response.raise_for_status()
@@ -654,6 +724,8 @@ def idobata_stream():
                                     ai_message['plan'] = data.get('plan')
                                 elif data.get('type') == 'review':
                                     ai_message['review'] = data.get('review')
+                                elif data.get('type') == 'audit':
+                                    ai_message['audit'] = _extract_audit_metadata(data)
                                 if 'agent' in data and 'content' in data:
                                     agent = data['agent']
                                     content = data['content']

@@ -38,6 +38,7 @@
 | Agentルーティング | 実装済み | 通常チャット画面の Auto Route から最適モードを自動選択し、general session の履歴・添付を使って実行 |
 | 評価・採点Agent | 実装済み | 各モードの回答後に evaluator agent が score / strengths / risks / missing info / next step を返す |
 | 非同期ジョブ化 | 実装済み | 各モードの prompt を Mission Queue へ投入し、JSON 永続化された job 状態と結果を右ペインで追跡 |
+| 監査ログ/コスト集計 | 実装済み | Ops Ledger で実行回数・トークン量・推定コストを集計し、各回答に audit log を表示 |
 
 このため、次の拡張は「Agentを呼べるか」ではなく、「Agentがどこまで自律的に仕事を進められるか」を強化する方向が適切です。
 

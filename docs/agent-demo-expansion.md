@@ -38,6 +38,7 @@ Work is being implemented in priority order. As of March 11, 2026, the status is
 | Agent routing | Implemented | Auto Route from the general chat screen selects the best workflow while reusing general-session history and attachments |
 | Critic / evaluator agent | Implemented | After each answer, an evaluator agent returns score / strengths / risks / missing info / next step |
 | Async job execution | Implemented | Prompts can be queued as Mission Queue jobs and tracked from persisted JSON-backed job state in the right rail |
+| Audit log / cost dashboard | Implemented | Ops Ledger aggregates runs, tokens, and estimated cost, and each answer can expose its audit log inline |
 
 That means the next step is not "can it answer?", but "can it plan, act, explain, and be governed?"
 
